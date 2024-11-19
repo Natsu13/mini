@@ -69,7 +69,7 @@ class Utilities {
         echo "</div>";
     }
 
-    public static function random($length) {
+    public static function random(int $length): string {
 		$output = "";
 		$characters = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';		
 		$charactersCount = strlen($characters);
@@ -79,7 +79,7 @@ class Utilities {
 		return $output;
 	}
 
-    public static function ip($pure = false) {
+    public static function ip(bool $pure = false): string {
         if(isset($_SERVER["HTTP_X_FORWARDED_FOR"])){
 			$ip = $_SERVER["HTTP_X_FORWARDED_FOR"];
 		}else if(isset($_SERVER["HTTP_FORWARDED_FOR"])){
@@ -98,7 +98,7 @@ class Utilities {
 		return $ip;
     }
 
-    public static function isEmail($email){
+    public static function isEmail(string $email): bool {
 		if(filter_var($email, FILTER_VALIDATE_EMAIL)){
 			return true;
 		}else{
@@ -234,7 +234,7 @@ class Router {
         if (!isset($_GET["action"])) $_GET["action"] = null;
     }
 
-    public function add($router_condition, $url_parameters, $redirect = false) {
+    public function add(string $router_condition, string | Closure $url_parameters, bool $redirect = false) {
         $buffer = $router_condition;
         $buffer = preg_replace("/\[(.*?)\]/", "($1)?", $buffer);
         $buffer = preg_replace("/\<(.*?)\>/", "(.*?)", $buffer);
@@ -250,19 +250,19 @@ class Router {
         );
     }
 
-    public function redirect($url) {
+    public function redirect(string $url) {
         header("location:".Router::url().$url);
         exit();
     }
 
-    public static function getPort() {
+    public static function getPort(): string {
         $port = $_SERVER['SERVER_PORT'];
         if ($port == 80 || $port == 448) $port = "";
         else $port = ":" . $port; //not add default ports to the url but this we can support running web on different port
         return $port;
     }
 
-    public static function url($full = false, $_request = false) {
+    public static function url(bool $full = false, bool $_request = false): string {
         $url = $_GET["url"] ?? "";
         $url = rtrim($url, "/");
         $requestUri = $_SERVER["REQUEST_URI"];
@@ -431,11 +431,11 @@ class Router {
         }
     }
 
-    public function get($name) {
+    public function get(string $name): string {
         return $this->_data[$name][0];
     }
 
-    public function getData() {
+    public function getData(): array {
         return array(
             "match" => $this->_get,
             "routes" => $this->router
@@ -569,7 +569,7 @@ class Layout {
 		}
 	}
 
-    public function render($filename, $model = NULL, $onlycompile = false, &$outputFile = null){		
+    public function render($filename, $model = NULL, $onlycompile = false, &$outputFile = null): bool {		
 		if (!file_exists($filename)) {
 			throw new Exception("Failed to load template \"".$filename."\"");
 			return false;
@@ -1340,7 +1340,7 @@ class Cookies {
 		Cookies::set( array("name", "permision"), "admin", "+24 hour" );
 		Cookies::set( "name", "test", "+24 hour" );
 	*/
-	public static function set($name, $value = 1, $time = "+1 hour"){
+	public static function set($name, $value = 1, $time = "+1 hour"): bool {
 		if($time == false){
 			if($value == 1){ $value = "+1 hour"; } 
 			foreach($name as $key => $val){
@@ -1372,9 +1372,11 @@ class Cookies {
 				return false;
 			}
 		}
+
+        return true;
 	}
 	
-	public static function delete($name){
+	public static function delete($name) {
 		if(gettype($name) == "array"){
 			for($i = 0; $i < count($name); $i++){
 				Cookies::set($name[$i], "", "-1 hour");
@@ -1384,13 +1386,13 @@ class Cookies {
 		}
 	}
 	
-	public static function exists($name){
+	public static function exists($name): bool {
 		if(isset($_COOKIE[$name])){
 			return true;
 		}else return false;
 	}
 	
-	public static function security_check($name){
+	public static function security_check($name): bool {
 		$security = Cookies::security_get($name);
 		if($security != false){			
 			if(sha1($name.$_COOKIE[$name]) == $security["hash"])
@@ -1401,7 +1403,7 @@ class Cookies {
             return false;
 	}
 	
-	public static function security_get($name){
+	public static function security_get($name): array | bool {
 		if(Cookies::exists($name)){
 			$data = explode(";;",$_COOKIE["SECURITY_".$name],3);
 			return array(
@@ -1418,15 +1420,14 @@ class Cookies {
 			if(count($dt)>1){ 
 				if($dt[0] == "SECURITY"){ 
 					if(!Cookies::exists($dt[1])){ 
-						setcookie($key, "", strtotime("-1 hour")); 
-			
+						setcookie($key, "", strtotime("-1 hour")); 			
 					} 
 				} 
 			}
 		}
 	}
 
-	public static function create_ifnotExists($name, $value = "", $time = "+1 hour"){
+	public static function create_ifnotExists($name, $value = "", $time = "+1 hour"): bool {
 		if(Cookies::exists($name)){
 			return true;
 		}
@@ -1434,7 +1435,7 @@ class Cookies {
 		return true;
 	}
 	
-	public static function dump($onlyName = false){
+	public static function dump($onlyName = false) {
 		echo "<table style='table-layout: fixed; border-collapse: collapse;width:100%;' border=0 class='snowLeopard'>";
 		if($onlyName){
 			echo "<tr style='border: 1px solid black;'><th>Key</th></tr>";
@@ -1653,7 +1654,7 @@ class UserService {
         $this->router = $router;
     }
 
-    public function check($login, $email): UserServiceCheck {
+    public function check(string $login, string $email): UserServiceCheck {
         if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
 
         $user = db\User::find($login, $email);
@@ -1665,7 +1666,7 @@ class UserService {
         return UserServiceCheck::Unknown;
     }
 
-    public function register($login, $password, $email): db\User | UserServiceCheck{
+    public function register(string $login, string $password, string $email): db\User | UserServiceCheck{
         $state = $this->check($login, $email);
 
         if($state == UserServiceCheck::Ok) {
@@ -1681,7 +1682,7 @@ class UserService {
         return $state;
     }
 
-    public function isAuthentificated(){
+    public function isAuthentificated(): bool {
         if(Cookies::security_check("userId")) {
             $userId = $_COOKIE["userId"];
             $user = db\User::findById($userId);
@@ -1690,7 +1691,7 @@ class UserService {
         return false;
     }
 
-    public function login($login, $password): UserServiceLogin {
+    public function login(string $login, string $password): UserServiceLogin {
         $user = db\User::find($login, $login);
 
         if($user == null) return UserServiceLogin::WrongLogin;
@@ -1719,7 +1720,3 @@ $container->setSingleton(Page::class);
 $container->setSingleton(Layout::class);
 $container->setSingleton(Database::class);
 $container->setSingleton(UserService::class);
-
-$router = $container->get(Router::class);
-$page = $container->get(Page::class);
-
