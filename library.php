@@ -535,7 +535,7 @@ class Page {
 	 * Add style to the page
 	 * $type = "text/css" | define the style type
 	 */
-	public function add_style($url, $type = "text/css") {
+	public function addStyle($url, $type = "text/css") {
 		$this->styles[] = array("url" => $url, "type" => $type);
 	}
 
@@ -543,7 +543,7 @@ class Page {
 	 * Add script to page 
 	 * $inhead = true | the script will be loaded in header else at end of the page
 	 */
-	public function add_script($url, $inhead = true) {
+	public function addScript($url, $inhead = true) {
 		$this->scripts[] = array("url" => $url, "inhead" => $inhead);
 	}
 }
