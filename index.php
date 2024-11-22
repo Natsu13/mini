@@ -23,6 +23,10 @@ $router->add("logout", function($args) use($userService, $router) {
     $userService->logout();
     $router->redirect("/");
 });
+$router->add("apitest", function(){
+    echo json_encode(["hello" => "world"]);
+    exit();
+});
 
 $router->start();
 
@@ -40,9 +44,18 @@ echo "<html>";
             }
             $layout->render(ROOT."/views/login.view", ["state" => $loginState]);
         } else {
-            //$user = db\User::findByEmail("kubat130@gmail.com");
             $user = $userService->current();
-            $layout->render(ROOT."/views/index.view", ["user" => $user]);
+
+            $builder = db\User::where("login = 'admin'")
+                ->where("id = :id", [":id" => 1])->limit(10);
+
+            $http = new Http();
+
+            $layout->render(ROOT."/views/index.view", [
+                "user" => $user, 
+                "query" => $builder->fetch(),
+                "api" => $http->getJson(Router::url()."/apitest/")->getResponse()
+            ]);
         }
 
         $page->footer();

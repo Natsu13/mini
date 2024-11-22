@@ -1,2 +1,6 @@
 <h1>Hello {$model["user"]->login}</h1>
 Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
+<hr/>
+{^$model["query"]}
+<hr/>
+{^$model["api"]}

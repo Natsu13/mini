@@ -1462,7 +1462,9 @@ class Database {
     private $connection = null;
 
     public function connect($host, $database, $username, $password) {
-        $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password);
+        $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,        ]);
         $this->connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     }
 
@@ -1471,6 +1473,19 @@ class Database {
             throw new Exception("Connection was not opened");
 
         return $this->connection;
+    }
+
+    public static function getPdoParamType($value): int {
+        if (is_int($value)) {
+            return PDO::PARAM_INT;
+        }
+        if (is_bool($value)) {
+            return PDO::PARAM_BOOL;
+        }
+        if (is_null($value)) {
+            return PDO::PARAM_NULL;
+        }
+        return PDO::PARAM_STR;
     }
 }
 
@@ -1592,6 +1607,12 @@ abstract class Model {
         return $result ? new static($result) : null;
     }
 
+    public static function where($condition, $params = []): QueryBuilder {
+        $obj = (new static);
+        $builder = new QueryBuilder($obj->database->getConnection(), static::$table);
+        return $builder->where($condition, $params);
+    }
+
     public function save(): bool {
         $db = $this->database->getConnection();
         $mappings = $this->getColumnMappings();
@@ -1629,6 +1650,314 @@ abstract class Model {
         }
 
         return false;
+    }
+}
+
+enum DataTableLike {
+    case Both;
+    case Left;
+    case Right;
+}
+
+class QueryBuilder {
+    private PDO $connection;
+	private $table = "";
+	private $where = [];
+	private $items = [];
+	private $joins = [];
+	private $having = [];
+	private $orderBy = null;
+	private $pageLimit = 0;
+	private $currentPage = 1;
+	private $sql = [];
+	private $debugSql = [];
+	private $takeAllFieldsFromTable = false;
+    private $bindCounter = 0;
+    private $className;
+
+	public function __construct(PDO $connection, string $table = "", $className = null) {
+		$this->table = $table;
+        $this->connection = $connection;
+        $this->className = $className;
+	}
+
+	public function table(string $name): self {
+		$this->table = $name;
+		return $this;
+	}
+
+	public function having(): self{
+		$this->having[] = array("value" => func_get_args());
+		return $this;
+	}
+
+	private function generateBindName() {
+        $this->bindCounter++;
+        return ":param" . $this->bindCounter;
+    }
+
+    public function where($condition, $params = []): self {
+        if (!empty($params)) {
+            $this->where[] = [
+                'type' => count($this->where) > 0 ? 'AND' : '',
+                'value' => $condition,
+                'binds' => $params,
+            ];
+            return $this;
+        }
+    
+        $binds = [];
+        $regex = '/(\w+)\s*(=|>|<|>=|<=|!=)\s*(\d+|\'[^\']*\'|"[^"]*")/'; 
+    
+        if (preg_match_all($regex, $condition, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $column = $match[1];
+                $operator = $match[2];
+                $value = trim($match[3], '\'"');
+                $bindName = $this->generateBindName();
+                $condition = str_replace($match[0], "$column $operator $bindName", $condition);
+                $binds[$bindName] = is_numeric($value) ? (float)$value : $value;
+            }
+        }
+    
+        $this->where[] = [
+            'type' => count($this->where) > 0 ? 'AND' : '',
+            'value' => $condition,
+            'binds' => $binds,
+        ];
+        return $this;
+    }
+
+	public function whereOr($condition, $params = []): self{
+        $change = (count($this->where) > 0);
+        $this->where($condition, $params);
+        if($change)
+		    $this->where[count($this->where) - 1]["type"] = "OR";
+
+		return $this;
+	}
+
+	/**
+     * replace {table} as name of original table
+     * {join} as table name of join
+     */
+    public function join($table, $condition, $name = ""): self {
+		if($name == "") $name = $table;
+        $this->joins[] = array("type" => "LEFT", "table" => $table, "name" => $name, "condition" => $condition);
+        return $this;
+    }
+
+	/**
+	 * DataTableLike::$BOTH = 0
+	 * DataTableLike::$LEFT = 1
+	 * DataTableLike::$RIGHT = 2
+	 */
+	public function like($column, $value, $type = 0, $isOr = false): self {
+		//"_to LIKE %~like~", $filter["receiver"]
+		$like = "%~like~";
+		if($type == DataTableLike::Left) $like = "%~like";
+		else if($type == DataTableLike::Right) $like = "%like~";
+
+		if($isOr)
+			$this->whereOr($column." LIKE ".$like, $value);
+		else
+			$this->where($column." LIKE ".$like, $value);
+
+		return $this;
+	}
+
+	public function likeOr($column, $value, $type = 0): self {
+		return $this->like($column, $value, $type, true);
+	}
+
+	public function count(): int {
+        $buildData = $this->buildSql(true);
+		$stmt = $this->connection->prepare($buildData["sql"]);
+        foreach ($buildData["binds"] as $name => $value) {
+            $stmt->bindValue($name, $value, Database::getPdoParamType($value));
+        }
+
+        $stmt->execute();
+        $result = $stmt->fetchColumn();
+		
+        if (defined('DEBUG')) {
+            ob_start();
+            $stmt->debugDumpParams();
+		    $this->debugSql["count"] = ob_get_clean();
+        }else{
+            $this->debugSql["count"] = $stmt->queryString;
+        }
+
+		return $result;
+	}
+
+	public function fetch(): array {
+        $buildData = $this->buildSql(false);
+		$stmt = $this->connection->prepare($buildData["sql"]);
+        foreach ($buildData["binds"] as $name => $value) {
+            $stmt->bindValue($name, $value, Database::getPdoParamType($value));
+        }        
+
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (defined('DEBUG')) {
+            ob_start();
+            $stmt->debugDumpParams();
+		    $this->debugSql["query"] = ob_get_clean();
+        }else{
+            $this->debugSql["query"] = $stmt->queryString;
+        }
+
+        if ($this->className) {
+            $objects = [];
+            foreach ($rows as $row) {
+                $objects[] = new $this->className($row);
+            }
+            return $objects;
+        } else {
+            return $rows;
+        }
+	}
+
+	public function order(string $value): self {
+		$this->orderBy = $value;
+		return $this;
+	}
+
+	public function limit(int $value): self {
+		$this->pageLimit = $value;
+		return $this;
+	}
+
+	public function page(int $value): self {
+		$this->currentPage = $value;
+		return $this;
+	}
+
+	public function takAllFields(): self {
+		$this->takeAllFieldsFromTable = true;
+		return $this;
+	}
+
+	public function item($value, $name = ""): self {
+		$this->items[] = array("value" => $value, "name" => $name, "must" => false);
+		return $this;
+	}
+
+	public function itemMust($value, $name): self {
+		$this->items[] = array("value" => $value, "name" => $name, "must" => true);
+		return $this;
+	}
+
+	public function items($items): self{
+		$list = explode(",", $items);
+		foreach($list as $item) {
+			$data = explode("as", $item);
+			if(count($data) == 1) {
+				$this->item(trim($item));
+			}else{
+				$this->item(trim($data[0]), trim($data[1]));
+			}
+		}
+        return $this;
+	}
+
+	public function getSql($isCount = false, $isDebug = true): string {
+		if($isCount) {
+			if($isDebug) {
+				return $this->debugSql["count"];
+			}else{
+				return $this->sql["count"];
+			}
+		}
+
+		if($isDebug) {
+			return $this->debugSql["query"];
+		}else{
+			return $this->sql["query"];
+		}
+	}
+
+    public function buildSql($isCount = false) {
+        $sql = [];
+        $binds = [];
+        $queryType = $isCount ? "SELECT COUNT(*)" : "SELECT";
+
+        if (count($this->items) === 0) {
+            $sql[] = $queryType . " *";
+        } else {
+            $columns = [];
+            if (!$isCount && $this->takeAllFieldsFromTable) {
+                $columns[] = "*";
+            }
+
+            foreach ($this->items as $item) {
+                if ($isCount && (!isset($item["must"]) || !$item["must"])) {
+                    continue;
+                }
+
+                $value = str_replace("{table}", $this->table, $item["value"]);
+                if (strpos($value, " ") !== false) {
+                    $value = "($value)";
+                }
+
+                $column = $value;
+                if (!empty($item["name"])) {
+                    $column .= " AS " . $item["name"];
+                }
+                $columns[] = $column;
+            }
+
+            $sql[] = $queryType . " " . implode(", ", $columns);
+        }
+
+        $sql[] = "FROM " . $this->table;
+
+        foreach ($this->joins as $join) {
+            $condition = str_replace(
+                ["{table}", "{join}"],
+                [$this->table, $join["name"]],
+                $join["condition"]
+            );
+            $sql[] = "{$join["type"]} JOIN {$join["table"]} AS {$join["name"]} ON $condition";
+        }
+
+        if (!empty($this->where)) {
+            $whereParts = [];
+            foreach ($this->where as $where) {
+                $whereParts[] = ($where["type"] ?? "") . " " . $where["value"];
+                $binds = array_merge($binds, $where["binds"]);
+            }
+            $sql[] = "WHERE " . implode(" ", $whereParts);
+        }
+
+        if (!empty($this->having)) {
+            $havingParts = [];
+            foreach ($this->having as $having) {
+                $condition = str_replace("{table}", $this->table, $having["value"]);
+                $havingParts[] = $condition;
+            }
+            $sql[] = "HAVING " . implode(" ", $havingParts);
+        }
+
+        if (!$isCount) {
+            if (!empty($this->orderBy)) {
+                $sql[] = "ORDER BY " . str_replace("{table}", $this->table, $this->orderBy);
+            }
+            if ($this->pageLimit) {
+                $sql[] = "LIMIT :limit OFFSET :offset";
+                $binds[':limit'] = $this->pageLimit;
+                $binds[':offset'] = ($this->currentPage - 1) * $this->pageLimit;
+            }
+        }
+
+        $finalSql = implode(" ", $sql);
+
+        return [
+            'sql' => $finalSql,
+            'binds' => $binds,
+        ];
     }
 }
 
@@ -1710,6 +2039,231 @@ class UserService {
         if(!$this->isAuthentificated()) return null;
         return db\User::findById($_COOKIE["userId"]);
     }
+}
+
+class Http {
+	private $curl;
+	private $returnTransfer;
+	private $executed;
+	private $response;
+	private $expectedStatus;
+	private $userpwd;
+	private $url;
+	private $originalUrl;
+	private $headers;
+	private $lastCurlDebug = null;
+	private $lastErrno = 0;
+	private $lastError = "";
+
+	public function __construct(){
+		$this->init();
+		curl_setopt($this->curl, CURLOPT_SSL_VERIFYPEER, false);
+	}
+
+	public function init(){
+		$this->curl = curl_init();
+		$this->returnTransfer = true;
+		$this->executed = false;
+		$this->response = NULL;
+		$this->expectedStatus = 200;
+		$this->userpwd = NULL;
+		$this->url = "";
+		$this->originalUrl = "";
+		$this->lastCurlDebug = null;
+		$this->lastErrno = 0;
+		$this->headers = array(
+			"Accept" => "application/json",
+			"Content-Type" => "application/x-www-form-urlencoded"
+		);
+	}
+
+	public function setReturnTransfer($state = true): self {
+		$this->returnTransfer = $state;
+        return $this;
+	}
+
+	public function setAccept($accept = "application/json"): self {
+		$this->headers["Accept"] = $accept;
+        return $this;
+	}
+
+	/**
+	 * application/json
+	 * application/x-www-form-urlencoded
+	 */
+	public function setContentType($contentType = "application/x-www-form-urlencoded"): self {
+		$this->headers["Content-Type"] = $contentType;
+        return $this;
+	}
+
+	public function setExpectedStatus($expectedStatus = 200): self {
+		$this->expectedStatus = $expectedStatus;
+        return $this;
+	}
+
+	public function setAuthorization(string $token): self {
+		$this->headers["Authorization"] = $token;
+        return $this;
+	}
+
+	public function setAuthorizationBearer(string $token): self {
+		$this->setAuthorization("Bearer ".$token);
+        return $this;
+	}
+
+	public function setUserPwd(string $user, string $pwd): self {
+		curl_setopt($this->curl, CURLOPT_USERPWD, $user . ":" . $pwd);
+        return $this;
+	}
+
+	private function formatQuery(string $url) {
+		$urlParts = parse_url($url);
+		parse_str($urlParts['query'], $params);
+	
+		$_params = [];
+		foreach ($params as $key => $value) {
+			$_params[] = $key."=".rawurlencode($value);
+		}
+	
+		//$urlParts['query'] = http_build_query($params);
+		$url = $urlParts['scheme'] . '://' . $urlParts['host'] . $urlParts['path'];
+		return $url . (count($_params) > 0? ('?' . join("&", $_params)):"");
+	}
+
+	private function sendRequest(string $url, mixed $data, int $contentLength, string $requestType): self {
+		curl_setopt($this->curl, CURLOPT_RETURNTRANSFER, $this->returnTransfer);
+		curl_setopt($this->curl, CURLOPT_URL, $this->formatQuery($url));
+		if($data != NULL)
+			curl_setopt($this->curl, CURLOPT_POSTFIELDS, $data);
+		curl_setopt($this->curl, CURLOPT_CUSTOMREQUEST, $requestType);		
+		if($contentLength > 0)
+			$this->headers["Content-Length"] = $contentLength;
+		curl_setopt($this->curl, CURLOPT_HTTPHEADER, $this->getHeaders());
+
+		$this->originalUrl = $url;
+		$this->url = $this->formatQuery($url);
+
+        return $this;
+	}
+
+	public function postJson(string $url, string $json = null): self {
+		$this->headers["Content-Type"] = "application/json";
+		$this->sendRequest($url, $json, strlen($json), "POST");
+        return $this;
+	}
+
+	private function addQuery(string $url, string $name, string $value = ""): string {
+		$ure = explode("?", $url);
+		$param = $name;
+		if($value != NULL && $value != "") {
+			$param.="=".$value;
+		}
+		if(!isset($ure[1])) {
+			return $url."?".$param;
+		}
+		return $url."&".$param;
+	}
+
+	public function postQuery(string $url, array $query, string $data = ""): self {
+		$json = json_encode($data);
+		foreach($query as $key => $value) {
+			$url = $this->addQuery($url, $key, $value);
+		}
+		$this->sendRequest($url, $json, strlen($json), "POST");
+        return $this;
+	}
+
+	public function post(string $url, array $data = []): self {
+		$data_query = [];
+		foreach($data as $key => $value) {
+			$data_query[] = $key."=".urlencode($value);
+		}
+		$result_query = implode("&", $data_query);
+		$this->sendRequest($url, $result_query, strlen($result_query), "POST");
+        return $this;
+	}
+
+	public function getJson(string $url): self {
+		$this->headers["Content-Type"] = "application/json";
+		$this->sendRequest($url, null, 0, "GET");
+        return $this;
+	}
+
+	public function get(string $url): self {
+		$this->sendRequest($url, null, 0, "GET");
+        return $this;
+	}
+
+	public function addHeader(string $name, string $value): self {
+		$this->headers[$name] = $value;
+        return $this;
+	}
+
+	public function getHeaders() {
+		$headers = [];
+		foreach($this->headers as $key => $value) {
+			$headers[] = $key.": ".$value;
+		}
+		return $headers;
+	}
+
+	public function exec(): self {
+		if (defined('CURLOPT_IPRESOLVE') && defined('CURL_IPRESOLVE_V4')){
+			curl_setopt($this->curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+		}
+
+		$this->response = curl_exec($this->curl);
+		$this->lastCurlDebug = curl_getinfo($this->curl);
+		$this->lastErrno = curl_errno($this->curl);
+		$this->executed = true;
+
+		if($this->lastErrno == 3) {
+			$this->lastError = "CURLE_URL_MALFORMAT";
+		}else if($this->lastErrno == 60) {
+			$this->lastError = "CURLE_PEER_FAILED_VERIFICATION";
+		}
+
+        return $this;
+	}
+
+	public function getDebug(): string {
+		return $this->lastCurlDebug;
+	}
+
+	public function getErrno(): int {
+		return $this->lastErrno;
+	}
+
+	public function getUrl(): string {
+		return $this->url;
+	}
+
+	public function getResponse($forseJsonEncode = false) {
+		if(!$this->executed) {
+            $this->exec();
+        }
+
+		if($forseJsonEncode || $this->headers["Accept"] == "application/json")
+			return json_decode($this->response, true);
+
+		return $this->response;
+	}
+
+	public function getResponseStatusCode() {
+		if(!$this->executed) return false;
+
+		return $this->response->code;
+	}
+
+	public function isError(): bool {
+		if(!$this->executed) return false;
+
+		if (!$this->response || !isset($this->response->code) || $this->response->code !== $this->expectedStatus) {
+			return true;
+		}
+
+		return false;
+	}
 }
 
 define("CACHE", 1);
