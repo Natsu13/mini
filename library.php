@@ -1502,12 +1502,12 @@ abstract class Model {
     }
 
     private function populate(array $data) {
-        $mappings = $this->getColumnMappings();  // Získáme mapování vlastností na sloupce
+        $mappings = $this->getColumnMappings();
 
         foreach ($data as $column => $value) {
-            $property = array_search($column, $mappings, true);  // Najdeme odpovídající vlastnost
+            $property = array_search($column, $mappings, true);
             if ($property !== false) {
-                $this->$property = $value;  // Nastavíme hodnotu pro odpovídající vlastnost
+                $this->$property = $value;
             }
         }
     }
@@ -1595,21 +1595,12 @@ abstract class Model {
 
     public static function findById(int|string $id): ?self {
         $obj = (new static);
-        $mappings = $obj->getColumnMappings();
-        $primaryKeyColumn = $mappings[static::$primaryKey];
-        
-        $db = $obj->database->getConnection();
-        $stmt = $db->prepare("SELECT * FROM " . static::$table . " WHERE $primaryKeyColumn = :id");
-        $stmt->bindParam(':id', $id, is_int($id)? PDO::PARAM_INT: PDO::PARAM_STR);
-        $stmt->execute();
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        return $result ? new static($result) : null;
+        return $obj->where([static::$primaryKey => $id])->fetchSingle();
     }
 
     public static function where($condition, $params = []): QueryBuilder {
         $obj = (new static);
-        $builder = new QueryBuilder($obj->database->getConnection(), static::$table);
+        $builder = new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
         return $builder->where($condition, $params);
     }
 
@@ -1659,6 +1650,9 @@ enum DataTableLike {
     case Right;
 }
 
+/**
+ * @template T of Model
+ */
 class QueryBuilder {
     private PDO $connection;
 	private $table = "";
@@ -1675,6 +1669,11 @@ class QueryBuilder {
     private $bindCounter = 0;
     private $className;
 
+    /**
+     * @param PDO $connection The PDO connection instance.
+     * @param string $table The name of the table.
+     * @param class-string<T>|null $className The name of the model class, or null if not specified.
+     */
 	public function __construct(PDO $connection, string $table = "", $className = null) {
 		$this->table = $table;
         $this->connection = $connection;
@@ -1697,6 +1696,19 @@ class QueryBuilder {
     }
 
     public function where($condition, $params = []): self {
+        if(is_array($condition)) {
+            foreach($condition as $key => $cond) {
+                $bindName = $this->generateBindName();
+                $this->where[] = [
+                    'type' => count($this->where) > 0 ? 'AND' : '',
+                    'value' => "$key = $bindName",
+                    'binds' => [$bindName => $cond],
+                ];                
+            }
+
+            return $this;
+        }
+
         if (!empty($params)) {
             $this->where[] = [
                 'type' => count($this->where) > 0 ? 'AND' : '',
@@ -1780,13 +1792,7 @@ class QueryBuilder {
         $stmt->execute();
         $result = $stmt->fetchColumn();
 		
-        if (defined('DEBUG')) {
-            ob_start();
-            $stmt->debugDumpParams();
-		    $this->debugSql["count"] = ob_get_clean();
-        }else{
-            $this->debugSql["count"] = $stmt->queryString;
-        }
+        $this->debugCapture($stmt, "count");
 
 		return $result;
 	}
@@ -1801,13 +1807,7 @@ class QueryBuilder {
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        if (defined('DEBUG')) {
-            ob_start();
-            $stmt->debugDumpParams();
-		    $this->debugSql["query"] = ob_get_clean();
-        }else{
-            $this->debugSql["query"] = $stmt->queryString;
-        }
+        $this->debugCapture($stmt);
 
         if ($this->className) {
             $objects = [];
@@ -1819,6 +1819,38 @@ class QueryBuilder {
             return $rows;
         }
 	}
+
+    /**
+     * @return T|null Returns an instance of the specified class or null if the record does not exist.
+     */
+    public function fetchSingle(): ?Model {
+        $buildData = $this->buildSql(false);
+		$stmt = $this->connection->prepare($buildData["sql"]);
+        foreach ($buildData["binds"] as $name => $value) {
+            $stmt->bindValue($name, $value, Database::getPdoParamType($value));
+        }        
+
+        $stmt->execute();
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $this->debugCapture($stmt, "querySingle");
+        
+        if ($this->className) {
+            return $result ? new $this->className($result) : null;
+        } else {
+            return $result;
+        }
+    }
+
+    private function debugCapture(\PDOStatement | false $stmt, string $debugName = "query"){
+        if (defined('DEBUG')) {
+            ob_start();
+            $stmt->debugDumpParams();
+		    $this->debugSql[$debugName] = ob_get_clean();
+        }else{
+            $this->debugSql[$debugName] = $stmt->queryString;
+        }
+    }
 
 	public function order(string $value): self {
 		$this->orderBy = $value;

@@ -19,13 +19,16 @@ class User extends \Model {
 
     public static function findByEmail($email): ?User {
         $obj = (new static);
+        return $obj->where(["email" => $email])->fetchSingle();
+
+        /*$obj = (new static);
         $db = $obj->database->getConnection();
         $stmt = $db->prepare("SELECT * FROM " . static::$table . " WHERE email = :email");
         $stmt->bindParam(':email', $email, \PDO::PARAM_STR);
         $stmt->execute();
         $result = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-        return $result ? new User($result) : null;
+        return $result ? new User($result) : null;*/
     }
 
     public static function find($login, $email): ?User {

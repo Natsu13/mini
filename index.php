@@ -49,11 +49,13 @@ echo "<html>";
             $builder = db\User::where("login = 'admin'")
                 ->where("id = :id", [":id" => 1])->limit(10);
 
+            $user1 = db\User::findById(1);
+
             $http = new Http();
 
             $layout->render(ROOT."/views/index.view", [
                 "user" => $user, 
-                "query" => $builder->fetch(),
+                "query" => $user1/*$builder->fetch()*/,
                 "api" => $http->getJson(Router::url()."/apitest/")->getResponse()
             ]);
         }
