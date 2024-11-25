@@ -1598,6 +1598,20 @@ abstract class Model {
         return $obj->where([static::$primaryKey => $id])->fetchSingle();
     }
 
+    public static function fetchAll(): ?array {
+        $obj = (new static);
+        $db = $obj->database->getConnection();
+        $stmt = $db->prepare("SELECT * FROM ".static::$table);  
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $objects = [];
+        foreach ($rows as $row) {
+            $objects[] = new static($row);
+        }
+        return $objects;
+    }
+
     public static function where($condition, $params = []): QueryBuilder {
         $obj = (new static);
         $builder = new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
