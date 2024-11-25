@@ -2298,6 +2298,89 @@ class Http {
 	}
 }
 
+class Request {
+    private array $headers = [];
+
+    public function __construct(){
+        $this->headers = getallheaders();
+    }
+
+    public function get($key) : string | null {
+        return isset($_GET[$key])? $_GET[$key]: null;
+    }
+
+    public function post($key) : string | null {
+        return isset($_POST[$key])? $_POST[$key]: null;
+    }
+
+    public function var($key) : string | null {
+        if(isset($_GET[$key])) return $_GET[$key];
+        if(isset($_POST[$key])) return $_POST[$key];
+        return null;
+    }
+
+    public function server($key) : string | null {
+        return isset($_SERVER[$key]) ? $_SERVER[$key] : null;
+    }
+
+    public function header($key) : string | null {
+        return isset($this->headers[$key]) ? $this->headers[$key] : null;
+    }
+
+    public function is($type): bool {
+        return strtolower($_SERVER['REQUEST_METHOD']) === trim(strtolower($type));
+    }
+
+    public function isSecure(): bool {
+        return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ||
+        (!empty($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
+        (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+    }    
+}
+
+class Response {
+    private Request $request;
+    
+    public const HTTP_OK = 200;
+    public const HTTP_BAD_REQUEST = 400;
+    public const HTTP_UNAUTHORIZED = 401;
+    public const HTTP_NOT_FOUND = 404;
+    public const HTTP_INTERNAL_SERVER_ERROR = 500;
+
+    public function __construct(Request $request){
+        $this->request = $request;
+    }
+
+    public function setHeader(string $name, string $value, bool $replace = true) {
+        header("$name: $value", $replace);
+    }
+
+    public function noCache() {
+        header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+		header("Cache-Control: post-check=0, pre-check=0", false);
+		header("Pragma: no-cache");
+    }
+
+    public function enableCors() {
+        if ($this->request->is('OPTIONS')) {
+			header('Access-Control-Allow-Origin: *');
+			header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
+			header('Access-Control-Allow-Headers: token, Content-Type');
+			header('Access-Control-Max-Age: 1728000');
+			header('Content-Length: 0');
+			header('Content-Type: text/plain');
+			die();
+		}
+	
+		header('Access-Control-Allow-Origin: *');
+		header('Content-Type: application/json');
+    }
+
+    public function status(?int $status = 0) : int | bool {
+        return http_response_code($status);
+    }
+}
+
 define("CACHE", 1);
 
 $container = Container::getInstance();
@@ -2306,3 +2389,5 @@ $container->setSingleton(Page::class);
 $container->setSingleton(Layout::class);
 $container->setSingleton(Database::class);
 $container->setSingleton(UserService::class);
+$container->setSingleton(Request::class);
+$container->setSingleton(Response::class);
