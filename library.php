@@ -229,129 +229,7 @@ class Router {
     private string $baseUrl;
 
     public function __construct() {
-        $_GET['action'] ??= null;
         $this->baseUrl = $this->generateBaseUrl();
-    }
-
-    public function add(string $path, string|callable $handler, bool $redirect = false): void {
-        // Convert route pattern to regex
-        $pattern = $this->convertPatternToRegex($path);
-        
-        $this->routes[] = [
-            'pattern' => $path,
-            'regex' => $pattern,
-            'handler' => $handler,
-            'redirect' => $redirect,
-            'status' => null,
-            'variables' => null,
-            'module' => null
-        ];
-    }
-
-    public function start(): void {
-        $url = $this->getCurrentUrl();
-        $this->matchedUrl = $url;
-
-        // Process standard GET parameters
-        $this->processQueryParameters();
-
-        // Match routes
-        foreach ($this->routes as $key => $route) {
-            if ($this->matchRoute($url, $route, $key)) {
-                $matchedRoute = $this->routes[$key];
-                
-                if (is_callable($matchedRoute['handler'])) {
-                    call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
-                    return;
-                } elseif ($matchedRoute['redirect']) {
-                    $this->redirect($matchedRoute['handler']);
-                } else {
-                    $this->processRouteParameters($matchedRoute['handler']);
-                }
-                break;
-            }
-        }
-    }
-
-    public function redirect(string $path): void {
-        $url = self::url() . '/' . ltrim($path, '/');
-        header("Location: $url");
-        exit();
-    }
-
-    public function get(string $name): string {
-        return $this->routeData[$name][0] ?? '';
-    }
-
-    public function getData(): array {
-        return [
-            'match' => $this->matchedUrl,
-            'routes' => $this->routes
-        ];
-    }
-
-    private function getCurrentUrl(): string {
-        $url = $_GET['url'] ?? '';
-        return trim($url, '/');
-    }
-
-    private function convertPatternToRegex(string $pattern): string {
-        $pattern = preg_replace('/\[(.*?)\]/', '($1)?', $pattern);
-        $pattern = preg_replace('/\<(.*?)\>/', '(.*?)', $pattern);
-        return str_replace('/', '\\/', $pattern);
-    }
-
-    private function matchRoute(string $url, array $route, int $key): bool {
-        if ($route['regex'] === $url || (preg_match('/^' . $route['regex'] . '$/U', $url) && $route['regex'] !== '')) {
-            $this->routes[$key]['status'] = 'matched';
-            $this->extractRouteVariables($url, $route, $key);
-            return true;
-        }
-        return false;
-    }
-
-    private function extractRouteVariables(string $url, array $route, int $key): void {
-        preg_match_all('/(\<(.*?)\>|\[(.*?)\])/', $route['pattern'], $paramNames);
-        preg_match_all('/^' . $route['regex'] . '$/', $url, $paramValues);
-
-        $variables = [];
-        foreach ($paramNames[2] as $index => $name) {
-            if (!empty($name)) {
-                $value = $paramValues[$index + 1][0] ?? null;
-                if ($value !== '') {
-                    $variables[$name] = $value;
-                }
-            }
-        }
-
-        if (!empty($variables)) {
-            $this->routes[$key]['variables'] = $variables;
-        }
-    }
-
-    private function processRouteParameters(string $handler): void {
-        parse_str($handler, $params);
-        foreach ($params as $key => $value) {
-            $_GET[$key] = $value;
-            $this->routeData[$key] = [$value, false];
-        }
-    }
-
-    private function processQueryParameters(): void {
-        $queryString = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
-        if ($queryString) {
-            parse_str($queryString, $queryParams);
-            foreach ($queryParams as $key => $value) {
-                $_GET[$key] = urldecode($value);
-            }
-        }
-    }
-
-    private function generateBaseUrl(): string {
-        $protocol = $_SERVER['REQUEST_SCHEME'] ?? 'http';
-        $host = $_SERVER['SERVER_NAME'];
-        $port = self::getPort();
-        return "{$protocol}://{$host}{$port}";
     }
 
     public static function url(bool $full = false, bool $_request = false): string {
@@ -383,8 +261,166 @@ class Router {
         return ":{$port}";
     }
 
-    private function getBaseUrl(): string {
-        return rtrim($this->baseUrl, '/');
+    public function add(string $path, string|callable $handler, bool $redirect = false): void {
+        $pattern = $this->buildRegexPattern($path);
+        
+        $this->routes[] = [
+            'pattern' => $path,
+            'regex' => $pattern,
+            'handler' => $handler,
+            'redirect' => $redirect,
+            'status' => null,
+            'variables' => null,
+            'module' => null
+        ];
+    }
+
+    public function redirect(string $path): void {
+        $url = self::url() . '/' . ltrim($path, '/');
+        header("Location: $url");
+        exit();
+    }
+
+    public function start(): void {
+        $url = $this->getCurrentUrl();
+        $this->matchedUrl = $url;
+
+        $this->processQueryParameters();
+
+        foreach ($this->routes as $key => $route) {
+            if ($this->matchRoute($url, $route, $key)) {
+                $matchedRoute = $this->routes[$key];
+                
+                if (is_callable($matchedRoute['handler'])) {
+                    call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
+                    return;
+                } elseif ($matchedRoute['redirect']) {
+                    $this->redirect($matchedRoute['handler']);
+                } else {
+                    $this->processRouteHandler($matchedRoute, $key);
+                }
+                break;
+            }
+        }
+    }
+
+    private function processRouteHandler(array $route, int $key): void {
+        if (!is_string($route['handler'])) return;
+
+        $handler = $route['handler'];
+        if ($route['variables']) {
+            foreach ($route['variables'] as $name => $value) {
+                $handler = str_replace("<{$name}>", $value, $handler);
+            }
+        }
+        
+        parse_str($handler, $params);
+        foreach ($params as $param => $value) {
+            $_GET[$param] = $value;
+            $this->routeData[$param] = [$value, true];
+        }
+    }
+
+    public function get(string $name): string {
+        return $this->routeData[$name][0] ?? '';
+    }
+
+    public function getData(): array {
+        return [
+            'match' => $this->matchedUrl,
+            'routes' => $this->routes
+        ];
+    }
+
+    private function getCurrentUrl(): string {
+        $url = $_GET['url'] ?? '';
+        return trim($url, '/');
+    }
+
+    private function matchRoute(string $url, array $route, int $key): bool {
+        if ($route['regex'] === $url || (preg_match('/^' . $route['regex'] . '$/U', $url) && $route['regex'] !== '')) {
+            $this->routes[$key]['status'] = 'matched';
+            $this->extractRouteVariables($url, $route, $key);
+            return true;
+        }
+        return false;
+    }
+
+    private function buildRegexPattern(string $path): string {
+        // First, escape forward slashes
+        $pattern = str_replace('/', '\\/', $path);
+        
+        // Replace optional sections [/something] with non-capturing group
+        $pattern = preg_replace_callback('/\[(.*?)\]/', function($match) {
+            return '(?:' . $match[1] . ')?';
+        }, $pattern);
+        
+        // Replace parameters <param=default> with named capturing groups
+        $pattern = preg_replace_callback('/\<([^>]+)\>/', function($match) {
+            $parts = explode('=', $match[1]);
+            return '([^\/]+)'; // Capture anything except forward slash
+        }, $pattern);
+        
+        return $pattern;
+    }
+
+    private function extractRouteVariables(string $url, array $route, int $key): void {
+        $params = [];
+        preg_match_all('/\<([^>]+)\>/', $route['pattern'], $paramMatches);
+        
+        foreach ($paramMatches[1] as $param) {
+            if (str_contains($param, '=')) {
+                [$name, $default] = explode('=', $param, 2);
+                $params[$name] = $default;
+            } else {
+                $params[$param] = null;
+            }
+        }
+
+        // Match URL against pattern and get values
+        preg_match('/^' . $route['regex'] . '$/U', $url, $matches);
+        array_shift($matches); // Remove full match
+
+        // Get parameter names in order they appear in the pattern
+        $orderedParams = array_keys($params);
+        
+        // Assign values to parameters, respecting the URL structure
+        foreach ($matches as $index => $value) {
+            if (isset($orderedParams[$index])) {
+                $paramName = $orderedParams[$index];
+                $params[$paramName] = $value !== '' ? $value : $params[$paramName];
+            }
+        }
+
+        if (!empty($params)) {
+            $this->routes[$key]['variables'] = $params;
+        }
+    }
+
+    private function processParameter(string $param, array &$variables): void {
+        if (str_contains($param, '=')) {
+            [$name, $default] = explode('=', $param, 2);
+            $variables[$name] = $default;
+        } else {
+            $variables[$param] = null;
+        }
+    }
+
+    private function processQueryParameters(): void {
+        $queryString = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
+        if ($queryString) {
+            parse_str($queryString, $queryParams);
+            foreach ($queryParams as $key => $value) {
+                $_GET[$key] = urldecode($value);
+            }
+        }
+    }
+
+    private function generateBaseUrl(): string {
+        $protocol = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+        $host = $_SERVER['SERVER_NAME'];
+        $port = self::getPort();
+        return "{$protocol}://{$host}{$port}";
     }
 
     public function dump(): void {
