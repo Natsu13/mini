@@ -153,7 +153,7 @@ class Container {
     private $instances = [];
     private $lazyServices = [];
 
-    public static function getInstance() {
+    public static function getInstance(): Container {
         if (self::$instance === null) {
             self::$instance = new Container();
         }
@@ -223,251 +223,208 @@ class Container {
 }
 
 class Router {
-    private $router = null;
-    public  $_get = array();
-    public  $_url = null;
-    public  $url_ = null;
-    public  $_data = null;
-    public  $url = "http://localhost/";
+    private array $routes = [];
+    private ?string $matchedUrl = null;
+    private ?array $routeData = null;
+    private string $baseUrl;
 
     public function __construct() {
-        if (!isset($_GET["action"])) $_GET["action"] = null;
+        $_GET['action'] ??= null;
+        $this->baseUrl = $this->generateBaseUrl();
     }
 
-    public function add(string $router_condition, string | Closure $url_parameters, bool $redirect = false) {
-        $buffer = $router_condition;
-        $buffer = preg_replace("/\[(.*?)\]/", "($1)?", $buffer);
-        $buffer = preg_replace("/\<(.*?)\>/", "(.*?)", $buffer);
-        $buffer = str_replace("/", "\\/", $buffer);
-        $this->router[] = array(
-            "condition"     => $router_condition,  //0
-            "regex"         => $buffer,            //1
-            "parameters"    => $url_parameters,    //2
-            "phase"         => null,               //3
-            "variables"     => null,               //4
-            "module"        => null,               //5
-            "redirect"      => $redirect           //6
-        );
+    public function add(string $path, string|callable $handler, bool $redirect = false): void {
+        // Convert route pattern to regex
+        $pattern = $this->convertPatternToRegex($path);
+        
+        $this->routes[] = [
+            'pattern' => $path,
+            'regex' => $pattern,
+            'handler' => $handler,
+            'redirect' => $redirect,
+            'status' => null,
+            'variables' => null,
+            'module' => null
+        ];
     }
 
-    public function redirect(string $url) {
-        header("location:".Router::url().$url);
+    public function start(): void {
+        $url = $this->getCurrentUrl();
+        $this->matchedUrl = $url;
+
+        // Process standard GET parameters
+        $this->processQueryParameters();
+
+        // Match routes
+        foreach ($this->routes as $key => $route) {
+            if ($this->matchRoute($url, $route, $key)) {
+                $matchedRoute = $this->routes[$key];
+                
+                if (is_callable($matchedRoute['handler'])) {
+                    call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
+                    return;
+                } elseif ($matchedRoute['redirect']) {
+                    $this->redirect($matchedRoute['handler']);
+                } else {
+                    $this->processRouteParameters($matchedRoute['handler']);
+                }
+                break;
+            }
+        }
+    }
+
+    public function redirect(string $path): void {
+        $url = self::url() . '/' . ltrim($path, '/');
+        header("Location: $url");
         exit();
+    }
+
+    public function get(string $name): string {
+        return $this->routeData[$name][0] ?? '';
+    }
+
+    public function getData(): array {
+        return [
+            'match' => $this->matchedUrl,
+            'routes' => $this->routes
+        ];
+    }
+
+    private function getCurrentUrl(): string {
+        $url = $_GET['url'] ?? '';
+        return trim($url, '/');
+    }
+
+    private function convertPatternToRegex(string $pattern): string {
+        $pattern = preg_replace('/\[(.*?)\]/', '($1)?', $pattern);
+        $pattern = preg_replace('/\<(.*?)\>/', '(.*?)', $pattern);
+        return str_replace('/', '\\/', $pattern);
+    }
+
+    private function matchRoute(string $url, array $route, int $key): bool {
+        if ($route['regex'] === $url || (preg_match('/^' . $route['regex'] . '$/U', $url) && $route['regex'] !== '')) {
+            $this->routes[$key]['status'] = 'matched';
+            $this->extractRouteVariables($url, $route, $key);
+            return true;
+        }
+        return false;
+    }
+
+    private function extractRouteVariables(string $url, array $route, int $key): void {
+        preg_match_all('/(\<(.*?)\>|\[(.*?)\])/', $route['pattern'], $paramNames);
+        preg_match_all('/^' . $route['regex'] . '$/', $url, $paramValues);
+
+        $variables = [];
+        foreach ($paramNames[2] as $index => $name) {
+            if (!empty($name)) {
+                $value = $paramValues[$index + 1][0] ?? null;
+                if ($value !== '') {
+                    $variables[$name] = $value;
+                }
+            }
+        }
+
+        if (!empty($variables)) {
+            $this->routes[$key]['variables'] = $variables;
+        }
+    }
+
+    private function processRouteParameters(string $handler): void {
+        parse_str($handler, $params);
+        foreach ($params as $key => $value) {
+            $_GET[$key] = $value;
+            $this->routeData[$key] = [$value, false];
+        }
+    }
+
+    private function processQueryParameters(): void {
+        $queryString = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
+        if ($queryString) {
+            parse_str($queryString, $queryParams);
+            foreach ($queryParams as $key => $value) {
+                $_GET[$key] = urldecode($value);
+            }
+        }
+    }
+
+    private function generateBaseUrl(): string {
+        $protocol = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+        $host = $_SERVER['SERVER_NAME'];
+        $port = self::getPort();
+        return "{$protocol}://{$host}{$port}";
+    }
+
+    public static function url(bool $full = false, bool $_request = false): string {
+        $url = $_GET['url'] ?? '';
+        $url = rtrim($url, '/');
+        $requestUri = $_SERVER['REQUEST_URI'];
+        $requestUri = rtrim($requestUri, '/') . '/';
+
+        $http = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+        $requestParts = explode('?', $requestUri);
+        $requestPath = $requestParts[0];
+        $port = self::getPort();
+
+        if ($full) {
+            $query = $_request && isset($requestParts[1]) ? '?' . $requestParts[1] : '';
+            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}{$query}";
+        } else {
+            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}" . str_replace("/{$url}", '/', $requestPath);
+        }
+
+        return rtrim($ret, '/');
     }
 
     public static function getPort(): string {
         $port = $_SERVER['SERVER_PORT'];
-        if ($port == 80 || $port == 448) $port = "";
-        else $port = ":" . $port; //not add default ports to the url but this we can support running web on different port
-        return $port;
+        if ($port == 80 || $port == 443) {
+            return '';
+        }
+        return ":{$port}";
     }
 
-    public static function url(bool $full = false, bool $_request = false): string {
-        $url = $_GET["url"] ?? "";
-        $url = rtrim($url, "/");
-        $requestUri = $_SERVER["REQUEST_URI"];
-        $requestUri = rtrim($requestUri, "/") . "/";
-
-        $http = $_SERVER["REQUEST_SCHEME"] ?? "http";
-        $requestParts = explode("?", $requestUri);
-        $requestPath = $requestParts[0];
-        $port = Router::getPort();
-
-        if ($full) {
-            $query = $_request && isset($requestParts[1]) ? "?" . $requestParts[1] : "";
-            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}{$query}";
-        } else {
-            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}" . str_replace("/{$url}", "/", $requestPath);
-        }
-
-        return rtrim($ret, "/");
+    private function getBaseUrl(): string {
+        return rtrim($this->baseUrl, '/');
     }
 
-    public function start() {
-        if (!isset($_GET["url"])) {
-            $url = "";
-        } else {
-            $url = $_GET["url"];
-        }
+    public function dump(): void {
+        echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl) . '</div>';
+        echo '<table style="width:100%; border-collapse:collapse; table-layout:fixed;">';
+        echo '<tr style="border:1px solid black;">
+                <th style="width:60px;">Status</th>
+                <th>Pattern</th>
+                <th>Regex</th>
+                <th style="width:150px;">Module</th>
+                <th>Variables</th>
+              </tr>';
 
-        $url_ = explode("?", $url);
-        $url = $url_[0];
-        if (substr($url, -1) == "/") {
-            $url = substr($url, 0, -1);
-        }
-        $d = explode("?", $_SERVER["REQUEST_URI"], 2);
-        $_SERVER["REQUEST_URI_NEW"] = $d[0];
-        if (substr($_SERVER["REQUEST_URI_NEW"], -1) != "/") {
-            $_SERVER["REQUEST_URI_NEW"] .= "/";
-        }
-        $port = Router::getPort();
+        foreach ($this->routes as $route) {
+            $status = match ($route['status']) {
+                'matched' => '<span style="color:#33a76c;font-weight:bold;">Yes</span>',
+                null => '<span style="color:black;">No</span>',
+                default => '<span style="color:#406b8c;">Maybe</span>'
+            };
 
-        $this->_url = $url;
-        $this->_get = $url;
-        $this->url_ = str_replace("/" . $url . "/", "/", $_SERVER["REQUEST_URI_NEW"]);
-        if (isset($_SERVER["REQUEST_SCHEME"])) {
-            $http = $_SERVER["REQUEST_SCHEME"];
-        } else {
-            $http = "http";
-        }
-        $this->url = $http . "://" . $_SERVER["SERVER_NAME"] . $port . str_replace("/" . $url . "/", "/", $_SERVER["REQUEST_URI_NEW"]);
+            echo "<tr style='border:1px solid black;'>
+                    <td>{$status}</td>
+                    <td>" . htmlspecialchars($route['pattern']) . "</td>
+                    <td>" . htmlspecialchars($route['regex']) . "</td>
+                    <td>" . htmlspecialchars($route['module'] ?? '') . "</td>
+                    <td>";
 
-        //Standart get
-        $get = explode("?", $_SERVER["REQUEST_URI"], 2);
-        if (count($get) > 1) {
-            $get = explode("&", $get[1]);
-            for ($i = 0; $i < count($get); $i++) {
-                $ma = explode("=", $get[$i]);
-                if (count($ma) == 1) {
-                    $_GET[$ma[0]] = "";
-                } else {
-                    $_GET[$ma[0]] = urldecode($ma[1]);
-                }
-            }
-        }
-
-        foreach ($this->router as $key => $routa) {
-            if ($routa["regex"] == $url || (preg_match("/^" . $routa["regex"] . "$/U", $url) && $routa["regex"] != "")) {
-                $this->router[$key]["phase"] = 1;
-                $this->router[$key]["variables"] = NULL;
-                $variables = [];
-                $unuseable = null;
-                preg_match_all("/(\<(.*?)\>|\[(.*?)\])/", $routa["condition"], $names);
-                preg_match_all("/^" . $routa["regex"] . "$/", $url, $values);
-
-                for ($i = 0; $i < count($names[2]); $i++) {
-                    if ($names[2][$i] == "") {
-                        preg_match_all("/\<(.*?)\>/", $names[3][$i], $parser);
-                        if ($parser[1] != null) {
-                            $variables[] = "";
-                            $unuseable[] = true;
-                            foreach ($parser[1] as $additional) {
-                                $variables[] = $additional;
-                                $unuseable[] = false;
-                            }
-                        } else {
-                            $variables[] = $names[3][$i];
-                            $unuseable[] = true;
-                        }
-                    } else {
-                        $variables[] = $names[2][$i];
-                        $unuseable[] = false;
-                    }
-                }
-
-                for ($i = 0; $i < count($variables); $i++) {
-                    if (!$unuseable[$i]) {
-                        $nam = explode("=", $variables[$i]);
-                        if (count($nam) == 1) {
-                            $default = null;
-                        } else {
-                            $default = $nam[1];
-                        }
-                        $variables[$i] = $nam[0];
-                        if (!isset($values[($i + 1)][0])) {
-                            $values[($i + 1)][0] = $default;
-                        } else if ($values[($i + 1)][0] == "") {
-                            $values[($i + 1)][0] = $default;
-                        }
-                        $this->router[$key]["variables"][$variables[$i]] = $values[($i + 1)][0];
-                        
-                        if(!is_callable($this->router[$key]["parameters"])) {
-                            $this->router[$key]["parameters"] = str_replace("<" . $variables[$i] . ">", $values[($i + 1)][0] != null ? $values[($i + 1)][0] : "", $this->router[$key]["parameters"]);
-                            $this->_url = $this->router[$key]["parameters"];
-                        }
-                    }
+            if ($route['status'] === 'matched' && !empty($route['variables'])) {
+                foreach ($route['variables'] as $key => $value) {
+                    echo "<b>" . htmlspecialchars($key) . "</b> = ";
+                    echo "<span style='color:green'>" . htmlspecialchars($value) . "</span><br>";
                 }
             } else {
-                $this->router[$key]["phase"] = 0;
+                echo "<i>No variables</i>";
             }
 
-            if(!is_callable($this->router[$key]["parameters"])) {
-                $data = explode("&", $this->router[$key]["parameters"]);
-                foreach ($data as $aq) {
-                    $mas = explode("=", $aq);
-                    if ($mas[0] == "module") {
-                        if (!isset($mas[1])) {
-                            $mas[1] = $this->router[$key]["variables"][$mas[0]];
-                        } else if ($mas[1] == "" or $mas[1] == null) {
-                            $mas[1] = $this->router[$key]["variables"][$mas[0]];
-                        }
-                        $this->router[$key]["module"] = $mas[1];
-                    }
-                }
-            }
+            echo "</td></tr>";
         }
-
-        for ($i = count($this->router) - 1; $i >= 0; $i--) {
-            $routa = $this->router[$i];
-            if ($routa["phase"] == 1) {
-                if (substr_count($routa["condition"], "/") >= substr_count($url, "/")) {
-                    $this->router[$i]["phase"] = 2;
-                    if (is_callable($this->router[$i]["parameters"])) {
-                        call_user_func($this->router[$i]["parameters"], $this->router[$i]["variables"]);
-                    }
-                    else if ($this->router[$i]["redirect"]) {
-                        echo "Redirecting... to <a href='" . $this->router[$i]["parameters"] . "'>" . $this->router[$i]["parameters"] . "</a>";
-                        header("location:" . $this->router[$i]["parameters"]);
-                        exit();
-                    } else {
-                        $data = explode("&", $routa["parameters"]);
-                        foreach ($data as $aq) {
-                            $from_url = false;
-                            $mas = explode("=", $aq);
-                            if (isset($routa["variables"][$mas[0]])) {
-                                $mas[1] = $routa["variables"][$mas[0]];
-                                $from_url = true;
-                            }
-                            if (!isset($mas[1])) {
-                                $mas[1] = "";
-                            }
-                            $_GET[$mas[0]] = $mas[1];
-                            $this->_data[$mas[0]] = array($mas[1], $from_url);
-                        }
-                    }
-                    $i = -1;
-                }
-            }
-        }
+        echo '</table>';
     }
-
-    public function get(string $name): string {
-        return $this->_data[$name][0];
-    }
-
-    public function getData(): array {
-        return array(
-            "match" => $this->_get,
-            "routes" => $this->router
-        );
-    }
-
-    public function dump(){
-		echo "<div style='padding:7px;'>Matching url: ".$this->_get."</div>";
-		echo "<table style='table-layout: fixed; border-collapse: collapse;width: 100%;' border=0 class='snowLeopard'>";
-		echo "<tr style='border: 1px solid black;'><th width=60>Match?</th><th>Mask</th><th>Regex</th><th width=150>Module</th><th>Request</th></tr>";
-		foreach($this->router as $key => $routa){
-			if($routa["phase"] == 0){$m = "<font color=black>No</font>";}
-			else if($routa["phase"] == 1){$m = "<font style='color:#406b8c'>Maybe</font>";}
-			else {$m = "<font style='color: #33a76c;font-weight: bold;'>Yes</font>";}
-			echo "<tr style='border: 1px solid black;'><td valign=top>".$m."</td><td valign=top><span>".($routa["condition"] == "" ? "<span class=desc>[empty]</span>" : htmlspecialchars($routa["condition"]))."</span> </td><td>".htmlspecialchars($routa["regex"])."</td></td><td valign=top>".$routa["module"]."</td><td>";
-			if($routa["phase"] == 2){
-				if($routa["variables"] == NULL){
-					echo "<i>Without parameters</i>";
-				}else{
-					foreach($routa["variables"] as $key => $aq){
-						echo "<b>" . $key . "</b> = ";
-						if($aq == NULL)
-							echo "<font color=black>NULL</font><br>";
-						else
-							echo "<font color=green>".$aq."</font><br>";
-					}
-				}
-			}
-			echo "</td></tr>";
-		}
-		echo "</table>";
-	}
 }
 
 class Page {
@@ -1572,6 +1529,10 @@ abstract class Model {
             static::$table = $matches[1];
         }
 
+        if(static::$table == null) {
+            throw new Exception("Table name is not set for model ".get_class($this));
+        }
+
         $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
         $mappings = [];
         
@@ -1623,6 +1584,10 @@ abstract class Model {
         $mappings = $this->getColumnMappings();
         $columns = array_map(fn($key) => $mappings[$key], array_keys($this->attributes));
         $primaryKey = static::$primaryKey;
+
+        if($primaryKey == null) {
+            throw new Exception("Primary key is not set for model ".get_class($this)." so we can't save the model");
+        }
 
         $columns = [];
         $values = [];
@@ -2041,7 +2006,7 @@ class UserService {
         return UserServiceCheck::Unknown;
     }
 
-    public function register(string $login, string $password, string $email): db\User | UserServiceCheck{
+    public function register(string $login, string $password, string $email): db\User | UserServiceCheck {
         $state = $this->check($login, $email);
 
         if($state == UserServiceCheck::Ok) {
@@ -2057,6 +2022,10 @@ class UserService {
         return $state;
     }
 
+    /**
+     * Check if current user is authentificated
+     * @return bool
+     */
     public function isAuthentificated(): bool {
         if(Cookies::security_check("userId")) {
             $userId = $_COOKIE["userId"];

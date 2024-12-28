@@ -58,8 +58,6 @@ echo "<html>";
 
             $user1 = db\User::findById(1);
 
-            Utilities::vardump(db\User::fetchAll());
-
             $http = new Http();
 
             $layout->render(ROOT."/views/index.view", [
