@@ -1,4 +1,17 @@
 <?php
+spl_autoload_register(function ($class) {    
+    $file = str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php';
+
+    if (file_exists($file)) {
+        require $file;
+    }else {
+        throw new Exception("File not found: ".$file);
+    }
+});
+
+use Models\User;
+
+define("ROOT", str_replace("\\", "/", getcwd()));
 
 class Utilities {
     public static function vardump($object, $level = 0) {
@@ -836,7 +849,7 @@ class TemplaterV2 {
             $token = $controllTokens[$index];
 
             if($token["type"] == $this->controllTokensDefinition[0]) { // {
-				$this->lastDebugMessage = "We catching controll token '".$this->printTOken($token)."' at ".$this->printTokenInfo($token);
+				$this->lastDebugMessage = "We catching controll token '".$this->printToken($token)."' at ".$this->printTokenInfo($token);
                 $input = "";
                 $ctokens = [];
                 $index++;
@@ -2033,7 +2046,7 @@ class UserService {
     public function check(string $login, string $email): UserServiceCheck {
         if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
 
-        $user = db\User::find($login, $email);
+        $user = User::find($login, $email);
         if($user == null) return UserServiceCheck::Ok;
 
         if($user->login == $login) return UserServiceCheck::LoginExists;
@@ -2042,11 +2055,11 @@ class UserService {
         return UserServiceCheck::Unknown;
     }
 
-    public function register(string $login, string $password, string $email): db\User | UserServiceCheck {
+    public function register(string $login, string $password, string $email): User | UserServiceCheck {
         $state = $this->check($login, $email);
 
         if($state == UserServiceCheck::Ok) {
-            $user = new db\User();
+            $user = new Models\User();
             $user->login = $login;
             $user->password = sha1($password);
             $user->email = $email;
@@ -2065,14 +2078,14 @@ class UserService {
     public function isAuthentificated(): bool {
         if(Cookies::security_check("userId")) {
             $userId = $_COOKIE["userId"];
-            $user = db\User::findById($userId);
+            $user = User::findById($userId);
             if($user != null) return true;            
         }
         return false;
     }
 
     public function login(string $login, string $password): UserServiceLogin {
-        $user = db\User::find($login, $login);
+        $user = User::find($login, $login);
 
         if($user == null) return UserServiceLogin::WrongLogin;
         if($user->password != sha1($password)) return UserServiceLogin::WrongPassword;
@@ -2086,9 +2099,9 @@ class UserService {
         Cookies::delete("userId");
     }
 
-    public function current(): ?db\User {
+    public function current(): ?User {
         if(!$this->isAuthentificated()) return null;
-        return db\User::findById($_COOKIE["userId"]);
+        return User::findById($_COOKIE["userId"]);
     }
 }
 

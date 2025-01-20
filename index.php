@@ -1,11 +1,11 @@
 <?php
 error_reporting(E_ERROR | E_PARSE);
 //defined("DEBUG", true);
-define("ROOT", str_replace("\\", "/", getcwd()));
 require_once "./library.php";
-require_once "./models/user.php";
 
 ob_start();
+
+use Models\User;
 
 $container = Container::getInstance();
 
@@ -53,10 +53,10 @@ echo "<html>";
         } else {
             $user = $userService->current();
 
-            $builder = db\User::where("login = 'admin'")
+            $builder = User::where("login = 'admin'")
                 ->where("id = :id", [":id" => 1])->limit(10);
 
-            $user1 = db\User::findById(1);
+            $user1 = User::findById(1);
 
             $http = new Http();
 
