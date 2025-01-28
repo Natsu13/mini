@@ -1705,11 +1705,11 @@ abstract class Model {
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
                 ];
             }
-            else if (preg_match('/@belongsTo\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+            else if (preg_match('/@(hasOne|belongsTo)\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
                 $relationships[$method->getName()] = [
                     'type' => 'belongsTo',
-                    'class' => $matches[1],
-                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower($matches[1]) . '_id'
+                    'class' => $matches[2],
+                    'foreignKey' => !empty($matches[3]) ? $matches[3] : strtolower($matches[2]) . '_id'
                 ];
             }
         }

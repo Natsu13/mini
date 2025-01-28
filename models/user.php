@@ -23,7 +23,7 @@ class User extends \Model {
     public int $permissionId;
 
     /**
-     * @belongsTo("Permission")
+     * @hasOne("Permission")
      */
     private function permission() { }
 
