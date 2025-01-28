@@ -5,6 +5,8 @@ use Database;
 
 /** 
  * @table("users") 
+ * 
+ * @method \Model\Permission|null permission()
  */
 class User extends \Model {
     /** @primaryKey */
@@ -16,6 +18,14 @@ class User extends \Model {
     public string $password;
 
     public string $email;
+
+    /** @column("permission_id") */
+    public int $permissionId;
+
+    /**
+     * @belongsTo("Permission")
+     */
+    private function permission() { }
 
     public static function findByEmail($email): ?User {
         $obj = (new static);

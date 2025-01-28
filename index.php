@@ -62,6 +62,7 @@ echo "<html>";
 
             $layout->render(ROOT."/views/index.view", [
                 "user" => $user, 
+                "permission" => $user->permission(),
                 "query" => $user1/*$builder->fetch()*/,
                 "api" => $http->postJson(Router::url()."/apitest/")->getResponse()
             ]);

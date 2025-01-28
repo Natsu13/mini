@@ -3,7 +3,7 @@ spl_autoload_register(function ($class) {
     $file = str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php';
 
     if (file_exists($file)) {
-        require $file;
+        require_once $file;
     }else {
         throw new Exception("File not found: ".$file);
     }
@@ -1382,14 +1382,15 @@ class Cookies {
         return true;
 	}
 	
-	public static function delete($name) {
+	public static function delete($name): bool {
 		if(gettype($name) == "array"){
 			for($i = 0; $i < count($name); $i++){
-				Cookies::set($name[$i], "", "-1 hour");
+				Cookies::set($name[$i], "", "-1 hour");                
 			}
-		}else {
-			return Cookies::set($name, "", "-1 hour");
+            return true;
 		}
+        
+        return Cookies::set($name, "", "-1 hour");
 	}
 	
 	public static function exists($name): bool {
@@ -1495,11 +1496,21 @@ class Database {
     }
 }
 
+enum ModelState {
+    case New;       //You created the model
+    case Loaded;    //Model was loaded from database
+    case Changed;   //After model saved
+}
+
 abstract class Model {
     protected static string $table;
     protected static string $primaryKey;
+    protected static bool $primaryKeyAutoIncrement = true;
+
+    protected $mappings = [];
     protected Database $database;
     protected $attributes = [];
+    protected ModelState $state = ModelState::New;
 
     public function __construct(array $data = []) {
         $this->database = Container::getInstance()->get(Database::class);
@@ -1508,10 +1519,13 @@ abstract class Model {
     }
 
     private function populate(array $data) {
-        $mappings = $this->getColumnMappings();
+        $this->mappings = $this->getColumnMappings();
+
+        if(!empty($data)) 
+            $this->state = ModelState::Loaded;
 
         foreach ($data as $column => $value) {
-            $property = array_search($column, $mappings, true);
+            $property = array_search($column, $this->mappings, true);
             if ($property !== false) {
                 $this->$property = $value;
             }
@@ -1561,15 +1575,6 @@ abstract class Model {
         }
     }
 
-    /*public function __get($name) {
-        return $this->attributes[$name] ?? null;
-    }
-
-    public function __set($name, $value) {
-        Utilities::vardump([$name, $value]);
-        $this->attributes[$name] = $value;
-    }*/
-
     private function getColumnMappings(): array {
         $reflector = new ReflectionClass($this);
 
@@ -1591,13 +1596,19 @@ abstract class Model {
 
             if (strpos($docComment, '@primaryKey') !== false) {
                 static::$primaryKey = $column;
+
+                if (strpos($docComment, '@autoIncrementDisabled') !== false) {
+                    static::$primaryKeyAutoIncrement = false;
+                }
             }
 
             if (preg_match('/@column\("([^"]+)"\)/', $docComment, $matches)) {
                 $column = $matches[1];
             }
 
-            $mappings[$property->getName()] = $column;
+            $propName = $property->getName();
+            $mappings[$propName] = $column;
+            $mappings[$column] = $propName;
         }
 
         return $mappings;
@@ -1647,13 +1658,17 @@ abstract class Model {
             }
         }
         
-        if ($this->$primaryKey === null) {
+        if ($this->$primaryKey === null || $this->state === ModelState::New) {
             // INSERT
             $placeholders = array_fill(0, count($columns), '?');
             $stmt = $db->prepare("INSERT INTO " . static::$table . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
 
             if ($stmt->execute($values)) {
-                $this->$primaryKey = $db->lastInsertId();
+                if (static::$primaryKeyAutoIncrement) {
+                    $this->$primaryKey = $db->lastInsertId();
+                }
+
+                $this->state = ModelState::Changed;
                 return true;
             }
         } else {
@@ -1665,10 +1680,84 @@ abstract class Model {
             $stmt = $db->prepare("UPDATE " . static::$table . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
             $values[] = $this->$primaryKey;
 
+            $this->state = ModelState::Changed;
             return $stmt->execute($values);
         }
 
         return false;
+    }
+
+    private $relationCache = [];
+
+    private function getRelationships(): array {
+        $reflector = new ReflectionClass($this);
+        $methods = $reflector->getMethods(ReflectionMethod::IS_PRIVATE);
+        $relationships = [];
+
+        foreach ($methods as $method) {
+            $docComment = $method->getDocComment();
+            if (!$docComment) continue;
+
+            if (preg_match('/@hasMany\("([^"]+)"\s*,\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+                $relationships[$method->getName()] = [
+                    'type' => 'hasMany',
+                    'class' => $matches[1],
+                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
+                ];
+            }
+            else if (preg_match('/@belongsTo\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+                $relationships[$method->getName()] = [
+                    'type' => 'belongsTo',
+                    'class' => $matches[1],
+                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower($matches[1]) . '_id'
+                ];
+            }
+        }
+
+        return $relationships;
+    }
+
+    protected function loadRelationship(string $method) {
+        if (isset($this->relationCache[$method])) {
+            return $this->relationCache[$method];
+        }        
+
+        $relationships = $this->getRelationships();
+        if (!isset($relationships[$method])) {
+            throw new Exception("Relationship $method not defined");
+        }
+
+        $relation = $relationships[$method];
+        $result = null;
+
+        $foreignKey = $this->mappings[$relation['foreignKey']];
+        if ($relation['type'] === 'hasMany') {
+            $result = (new $relation['class'])
+                ->where([$foreignKey => $this->{static::$primaryKey}])
+                ->fetchAll();
+        }
+        else if ($relation['type'] === 'belongsTo') {
+            $foreignValue = $this->{$foreignKey};
+            $className = "Models\\". $relation['class'];
+            $result = $foreignValue ? ($className)::findById($foreignValue) : null;
+        }
+
+        $this->relationCache[$method] = $result;
+        return $result;
+    }
+
+    public function __call($method, $args) {
+        try {
+            $relationships = $this->getRelationships();
+            
+            if (isset($relationships[$method])) {
+                return $this->loadRelationship($method);
+            }
+
+            return self::__call($method, $args);
+        } catch (Error $e) {
+            throw new Exception("Method $method not found in " . get_class($this));
+        }
     }
 }
 
@@ -2117,7 +2206,7 @@ class Http {
 	private $headers;
 	private $lastCurlDebug = null;
 	private $lastErrno = 0;
-	private $lastError = "";
+	private $lastError = "unknown";
 
 	public function __construct(){
 		$this->init();
@@ -2263,7 +2352,7 @@ class Http {
         return $this;
 	}
 
-	public function getHeaders() {
+	public function getHeaders(): array {
 		$headers = [];
 		foreach($this->headers as $key => $value) {
 			$headers[] = $key.": ".$value;
@@ -2298,11 +2387,19 @@ class Http {
 		return $this->lastErrno;
 	}
 
+    public function getLastError(): string {
+        return $this->lastError;
+    }
+
 	public function getUrl(): string {
 		return $this->url;
 	}
 
-	public function getResponse($forseJsonEncode = false) {
+    public function isExecuted(): bool {
+        return $this->executed;
+    }
+
+	public function getResponse($forseJsonEncode = false): mixed  {
 		if(!$this->executed) {
             $this->exec();
         }
@@ -2313,7 +2410,7 @@ class Http {
 		return $this->response;
 	}
 
-	public function getResponseStatusCode() {
+	public function getResponseStatusCode(): bool | int {
 		if(!$this->executed) return false;
 
 		return $this->response->code;
