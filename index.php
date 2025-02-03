@@ -19,8 +19,8 @@ $response = $container->get(Response::class);
 
 $database->connect("127.0.0.1", "mini", "root", "");
 
-$router->add("", "page=index");
-$router->add("login", "page=login");
+$router->add("", "view=index");
+$router->add("login", "view=login");
 $router->add("logout", function($args) use($userService, $router) {   
     $userService->logout();
     $router->redirect("/");
@@ -41,7 +41,7 @@ echo "<html>";
     $page->head();
     echo "<body>";
         $isAuthentificated = $userService->isAuthentificated();
-        if(!$isAuthentificated || $_GET["page"] == "login") {
+        if(!$isAuthentificated || $_GET["view"] == "login") {
             $loginState = null;
             if(isset($_POST["login"])) {
                 $loginState = $userService->login($_POST["login"], $_POST["password"]);
@@ -59,12 +59,15 @@ echo "<html>";
             $user1 = User::findById(1);
 
             $http = new Http();
+            
+            $paginator = new Paginator(562, 10, Router::url());
 
             $layout->render(ROOT."/views/index.view", [
                 "user" => $user, 
                 "permission" => $user->permission(),
                 "query" => $user1/*$builder->fetch()*/,
-                "api" => $http->postJson(Router::url()."/apitest/")->getResponse()
+                "api" => $http->postJson(Router::url()."/apitest/")->getResponse(),
+                "paginator" => $paginator
             ]);
         }
 

@@ -120,6 +120,237 @@ class Utilities {
 	}
 }
 
+enum PaginatorType {
+    case Page;
+    case Prev;
+    case Next;
+    case Text;
+    case Dots;
+}
+
+class Paginator {
+    private int $totalItems;
+    private int $itemsPerPage;
+    private int $currentPage;
+    private string $urlPattern;
+    private array $options;    
+
+    public function __construct(int $totalItems, int $itemsPerPage, string $urlPattern, array $options = []) {
+        $this->totalItems = $totalItems;
+        $this->itemsPerPage = $itemsPerPage;
+        
+        $this->options = array_merge([
+            'pageParam' => 'page',
+            'showTotal' => true,
+            'totalPosition' => 'right',
+            'prevText' => '&laquo;',
+            'nextText' => '&raquo;',
+            'containerClass' => 'pagination',
+            'itemClass' => 'page-item',
+            'linkClass' => 'page-link',
+            'textClass' => 'page-text',
+            'activeClass' => 'active',
+            'displayCount' => 7
+        ], $options);
+
+        $this->urlPattern = $this->processUrlPattern($urlPattern);
+        $this->currentPage = $this->getCurrentPage();
+    }
+
+    private function processUrlPattern(string $url): string {
+        $parsedUrl = parse_url($url);
+        $path = $parsedUrl['path'] ?? '';
+        $query = [];
+        
+        if (isset($parsedUrl['query'])) {
+            parse_str($parsedUrl['query'], $query);
+        }
+        
+        unset($query[$this->options['pageParam']]);
+        
+        $baseUrl = $path;
+        
+        if (!empty($query)) {
+            $baseUrl .= '?' . http_build_query($query) . '&';
+        } else {
+            $baseUrl .= '?';
+        }
+        
+        return $baseUrl . $this->options['pageParam'] . '=(:page)';
+    }
+
+    private function getCurrentPage(): int {
+        $page = $_GET[$this->options['pageParam']] ?? 1;
+        return max(1, min((int)$page, $this->getTotalPages()));
+    }
+
+    private function getTotalPages(): int {
+        return max(1, ceil($this->totalItems / $this->itemsPerPage));
+    }
+
+    private function getVisiblePages(): array {
+        $totalPages    = $this->getTotalPages();
+        $currentPage   = $this->currentPage;
+        // Určete počet prostředních čísel, které chcete v okně (bez prvních a posledních)
+        // Např. pokud chcete celkem 9 číslic, pak: 1 a poslední zabírají 2 místa a okno by mělo mít 7 míst.
+        $displayCount  = $this->options["displayCount"]; 
+        // Z toho odvodíme počet čísel mezi prvním a posledním (pokud bychom nepoužili tečky)
+        $innerCount    = $displayCount - 2; 
+    
+        $result = [];
+    
+        // Pokud je celkový počet stránek menší nebo roven požadovanému počtu, zobrazíme všechny:
+        if ($totalPages <= $displayCount) {
+            for ($i = 1; $i <= $totalPages; $i++) {
+                $result[] = ["val" => $i, "type" => PaginatorType::Page];
+            }
+        } else {
+            // Pokud máme více stránek, bude zobrazení následující:
+            // První stránka se zobrazí vždy.
+            $result[] = ["val" => 1, "type" => PaginatorType::Page];
+    
+            /*
+             * Určíme, zda jsme blízko začátku, konce nebo jsme "uprostřed".
+             * Pro tento účel si stanovíme horní a dolní hranici prostředního okna.
+             */
+            $halfInner = floor($innerCount / 2);
+    
+            // Pokud je aktuální stránka dostatečně blízko začátku, nebude se kreslit levá tečka.
+            if ($currentPage <= ($halfInner + 2)) {
+                $start = 2;
+                $end   = $innerCount + 1;
+                for ($i = $start; $i <= $end; $i++) {
+                    $result[] = ["val" => $i, "type" => PaginatorType::Page];
+                }
+                $result[] = ["val" => "...", "type" => PaginatorType::Dots];
+            }
+            // Pokud je aktuální stránka dostatečně blízko konce, nebude se kreslit pravá tečka.
+            elseif ($currentPage >= $totalPages - ($halfInner + 1)) {
+                $result[] = ["val" => "...", "type" => PaginatorType::Dots];
+                $start = $totalPages - $innerCount;
+                for ($i = $start; $i < $totalPages; $i++) {
+                    $result[] = ["val" => $i, "type" => PaginatorType::Page];
+                }
+            }
+            // Jinak jsme uprostřed a kreslíme obě tečky.
+            else {
+                $result[] = ["val" => "...", "type" => PaginatorType::Dots];
+                $start = $currentPage - $halfInner;
+                $end   = $currentPage + $halfInner;
+                // Pokud je počet prostředních míst lichý a chceme střed přesně u aktuální stránky,
+                // můžeme doladit hranici:
+                if (($end - $start + 1) < $innerCount) {
+                    $end++;
+                }
+                for ($i = $start; $i <= $end; $i++) {
+                    $result[] = ["val" => $i, "type" => PaginatorType::Page];
+                }
+                $result[] = ["val" => "...", "type" => PaginatorType::Dots];
+            }
+    
+            // Poslední stránka se zobrazí vždy.
+            $result[] = ["val" => $totalPages, "type" => PaginatorType::Page];
+        }
+    
+        // Volitelně můžeme přidat tlačítka "prev" a "next":
+        if ($currentPage != 1) {
+            array_unshift($result, ["val" => $this->options["prevText"], "type" => PaginatorType::Prev]);
+        }
+        if ($currentPage != $totalPages) {
+            $result[] = ["val" => $this->options["nextText"], "type" => PaginatorType::Next];
+        }
+    
+        return $result;
+    }
+
+    private function renderLink(string|int $value, PaginatorType $type): string {
+        $itemClass = $this->options['itemClass'];
+        $linkClass = $this->options['linkClass'];
+        $textClass = $this->options['textClass'];
+
+        if($type == PaginatorType::Page) {
+            $page = intval($value);            
+            $url = str_replace('(:page)', (string)$page, $this->urlPattern);
+
+            if($page == $this->getCurrentPage())
+                $itemClass .= ' ' . $this->options['activeClass'];
+
+            return sprintf(
+                '<li class="%s"><a href="%s" class="%s">%s</a></li>',
+                $itemClass,
+                $url,
+                $linkClass,
+                $page
+            );
+        } else if($type == PaginatorType::Dots) {
+            $itemClass .= ' ' . $textClass;
+            return sprintf(
+                '<li class="%s">...</li>',
+                $itemClass
+            );
+        } else if($type == PaginatorType::Prev || $type == PaginatorType::Next) {
+            $page = $this->getCurrentPage();
+            if($type == PaginatorType::Prev)
+                $page--;
+            else
+                $page++;
+
+            $url = str_replace('(:page)', (string)$page, $this->urlPattern);
+
+            return sprintf(
+                '<li class="%s"><a href="%s" class="%s">%s</a></li>',
+                $itemClass,
+                $url,
+                $linkClass,
+                $value
+            );
+        }
+
+        return sprintf("<li>%s</li>", $value);
+    }
+
+    public function render(): string {
+        $html = [];
+        $html[] = sprintf('<nav><ul class="%s">', $this->options['containerClass']);
+
+        if ($this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
+            $html[] = sprintf(
+                '<li class="%s"><span class="%s">Celkem: %d</span></li>',
+                $this->options['itemClass'],
+                $this->options['linkClass'],
+                $this->totalItems
+            );
+        }
+
+        foreach ($this->getVisiblePages() as $page) {
+            $html[] = $this->renderLink(
+                $page["val"],
+                $page["type"]
+            );
+        }
+
+        if ($this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
+            $html[] = sprintf(
+                '<li class="%s"><span>Celkem: %d</span></li>',
+                $this->options['textClass'],
+                $this->totalItems
+            );
+        }
+
+        $html[] = '</ul></nav>';
+
+        return implode('', $html);
+    }
+
+    public function getOffset(): int {
+        return ($this->currentPage - 1) * $this->itemsPerPage;
+    }
+
+    public function getLimit(): int {
+        return $this->itemsPerPage;
+    }
+}
+
 class Url {
     public static function addParam(string $url, string $name, string $value = ""): string  {
         $parsedUrl = parse_url($url);

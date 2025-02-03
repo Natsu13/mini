@@ -1,8 +1,37 @@
 <h1>Hello {$model["user"]->login}</h1>
+Permission: {$model["user"]->permission()->print()}<br/>
 Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
+{$model["paginator"]->render()}
 <hr/>
 {^$model["permission"]}
 <hr/>
 {^$model["query"]}
 <hr/>
 {^$model["api"]}
+
+<style>
+    ul.pagination { padding: 0; margin: 0; }
+    ul.pagination li:not(.page-text) { 
+        display: inline-block;
+        border: 1px solid silver;
+        margin: 3px;
+        border-radius: 3px; 
+    }
+    ul.pagination li:not(.page-text):not(.active):hover { 
+        background: #ebebeb;
+    }
+    ul.pagination li.active {
+        background: #dddddd;
+        border-color: #dddddd;  
+    }
+    ul.pagination li.page-text {
+        display: inline-block;
+        margin: 3px;
+    }
+    ul.pagination li a {
+        text-decoration: none;
+        color: black;
+        padding: 5px 10px;
+        display: inline-block;
+    }
+</style>

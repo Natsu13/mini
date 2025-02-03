@@ -15,4 +15,11 @@ class Permission extends \Model {
     public string $name;
 
     public ?string $color;
+
+    public function print(): string {
+        if($this->color) {
+            return "<span style='color:{$this->color}'>{$this->name}</span>";
+        }
+        return $this->name;
+    }
 }
