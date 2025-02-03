@@ -7,6 +7,7 @@ use Database;
  * @table("users") 
  * 
  * @method \Model\Permission|null permission()
+ * @method \QueryBuilder articles()
  */
 class User extends \Model {
     /** @primaryKey */
@@ -27,9 +28,14 @@ class User extends \Model {
      */
     private function permission() { }
 
+    /**
+     * @hasMany("Article", "author_id")
+     */
+    private function articles() { }
+
     public static function findByEmail($email): ?User {
         $obj = (new static);
-        return $obj->where(["email" => $email])->fetchSingle();
+        return $obj->where(["email" => $email])->fetch();
     }
 
     public static function find(string $login, string $email): ?User {

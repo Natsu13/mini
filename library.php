@@ -31,9 +31,9 @@ class Utilities {
                 echo "</span> => ";
                 if (is_null($o)) {
                     echo "<span class=typev>NULL</span> ";
-                } elseif (is_array($o)) {
+                } else if (is_array($o)) {
                     Utilities::vardump($o, $level + 1);
-                } elseif (is_object($o)) {
+                } else if (is_object($o)) {
                     Utilities::vardump($o, $level + 1);
                 } else {
                     $type = gettype($o);
@@ -41,7 +41,7 @@ class Utilities {
                     echo "<span class='value type-" . $type . "'>";
                     if ($type == "string") {
                         echo "'" . htmlentities($o) . "'";
-                    } elseif ($type == "boolean") {
+                    } else if ($type == "boolean") {
                         if ($o == true) {
                             echo "true";
                         } else {
@@ -120,6 +120,106 @@ class Utilities {
 	}
 }
 
+class Date {
+    private static int $timezoneOffset = 0; // Default timezone offset in hours
+
+    /**
+     * Sets the global timezone offset (in hours).
+     *
+     * @param int $offset The number of hours to shift the timezone (e.g. +1, -1).
+     */
+    public static function setTimezoneOffset(int $offset): void {
+        self::$timezoneOffset = $offset;
+    }
+
+    public static function month($val): string {
+		return date("F", mktime(0, 0, 0, $val, 1, 2024));
+	}
+	
+	public static function day($val){
+		switch($val){
+			case 1: return "Monday";
+			case 2: return "Tuesday";
+			case 3: return "Wednesday";
+			case 4: return "Thursday";
+			case 5: return "Friday";
+			case 6: return "Saturday";
+			case 7: return "Sunday";
+		}
+		return "Unknown";
+	}
+
+    /**
+     * Formats a Unix timestamp into a human-readable date/time string in English.
+     *
+     * @param int  $timestamp    The Unix timestamp.
+     * @param bool $noConvert    If true, the method will use special conversion rules 
+     *                           (e.g. "Today at", "Yesterday at", "Tomorrow at").
+     *                           If false, a standard format "day. month at hour:minute" is returned.
+     * @param bool $withoutTime  If true, returns only the date (day, month, year) without time.
+     * @return string            The formatted date/time string.
+     */
+    public static function toString(int $timestamp, bool $noConvert = true, bool $withoutTime = false): string {
+        // Create a DateTime object from the timestamp
+        $dt = (new DateTime())->setTimestamp($timestamp);
+
+        // Apply global timezone offset if set
+        if (self::$timezoneOffset !== 0) {
+            $modifier = (self::$timezoneOffset > 0 ? "+".self::$timezoneOffset." hours" : self::$timezoneOffset." hours");
+            $dt->modify($modifier);
+        }
+
+        $day    = $dt->format('j');
+        $monthNum = $dt->format('m');
+        $year   = $dt->format('Y');
+        $hour   = $dt->format('H');
+        $minute = $dt->format('i');
+        
+        // Get the English name of the month
+        $month = self::month($monthNum);
+        
+        // Return only date if requested
+        if ($withoutTime) {
+            return $day . ". " . $month . " " . $year;
+        }
+        
+        // If no special conversion is requested, return standard format
+        if (!$noConvert) {
+            return $day . ". " . $month . " at " . $hour . ":" . $minute;
+        }
+        
+        // Create a DateTime object for the current moment
+        $now = new DateTime();
+        $interval = $now->diff($dt);
+        $inPast = $dt < $now;
+        $diffDays = (int)$interval->format('%a');
+        
+        // Decide how to format the string based on the difference in days
+        if ($diffDays === 0) {
+            // Today
+            $formatted = "Today at " . $hour . ":" . $minute;
+        } else if ($diffDays === 1) {
+            // Yesterday or Tomorrow
+            if ($inPast) {
+                $formatted = "Yesterday at " . $hour . ":" . $minute;
+            } else {
+                $formatted = "Tomorrow at " . $hour . ":" . $minute;
+            }
+        } else {
+            // For dates with a difference greater than one day
+            if ($year === $now->format('Y')) {
+                // If within the current year, include time but not the year
+                $formatted = $day . " " . $month . " at " . $hour . ":" . $minute;
+            } else {
+                // Otherwise, display full date without time
+                $formatted = $day . ". " . $month . " " . $year;
+            }
+        }
+        
+        return $formatted;
+    }
+}
+
 enum PaginatorType {
     case Page;
     case Prev;
@@ -179,43 +279,32 @@ class Paginator {
         return $baseUrl . $this->options['pageParam'] . '=(:page)';
     }
 
-    private function getCurrentPage(): int {
+    public function getCurrentPage(): int {
         $page = $_GET[$this->options['pageParam']] ?? 1;
         return max(1, min((int)$page, $this->getTotalPages()));
     }
 
-    private function getTotalPages(): int {
+    public function getTotalPages(): int {
         return max(1, ceil($this->totalItems / $this->itemsPerPage));
     }
 
     private function getVisiblePages(): array {
         $totalPages    = $this->getTotalPages();
         $currentPage   = $this->currentPage;
-        // Určete počet prostředních čísel, které chcete v okně (bez prvních a posledních)
-        // Např. pokud chcete celkem 9 číslic, pak: 1 a poslední zabírají 2 místa a okno by mělo mít 7 míst.
         $displayCount  = $this->options["displayCount"]; 
-        // Z toho odvodíme počet čísel mezi prvním a posledním (pokud bychom nepoužili tečky)
         $innerCount    = $displayCount - 2; 
     
         $result = [];
     
-        // Pokud je celkový počet stránek menší nebo roven požadovanému počtu, zobrazíme všechny:
         if ($totalPages <= $displayCount) {
             for ($i = 1; $i <= $totalPages; $i++) {
                 $result[] = ["val" => $i, "type" => PaginatorType::Page];
             }
         } else {
-            // Pokud máme více stránek, bude zobrazení následující:
-            // První stránka se zobrazí vždy.
             $result[] = ["val" => 1, "type" => PaginatorType::Page];
     
-            /*
-             * Určíme, zda jsme blízko začátku, konce nebo jsme "uprostřed".
-             * Pro tento účel si stanovíme horní a dolní hranici prostředního okna.
-             */
             $halfInner = floor($innerCount / 2);
     
-            // Pokud je aktuální stránka dostatečně blízko začátku, nebude se kreslit levá tečka.
             if ($currentPage <= ($halfInner + 2)) {
                 $start = 2;
                 $end   = $innerCount + 1;
@@ -224,21 +313,19 @@ class Paginator {
                 }
                 $result[] = ["val" => "...", "type" => PaginatorType::Dots];
             }
-            // Pokud je aktuální stránka dostatečně blízko konce, nebude se kreslit pravá tečka.
-            elseif ($currentPage >= $totalPages - ($halfInner + 1)) {
+            else if ($currentPage >= $totalPages - ($halfInner + 1)) {
                 $result[] = ["val" => "...", "type" => PaginatorType::Dots];
                 $start = $totalPages - $innerCount;
                 for ($i = $start; $i < $totalPages; $i++) {
                     $result[] = ["val" => $i, "type" => PaginatorType::Page];
                 }
             }
-            // Jinak jsme uprostřed a kreslíme obě tečky.
+            
             else {
                 $result[] = ["val" => "...", "type" => PaginatorType::Dots];
                 $start = $currentPage - $halfInner;
                 $end   = $currentPage + $halfInner;
-                // Pokud je počet prostředních míst lichý a chceme střed přesně u aktuální stránky,
-                // můžeme doladit hranici:
+                
                 if (($end - $start + 1) < $innerCount) {
                     $end++;
                 }
@@ -248,11 +335,9 @@ class Paginator {
                 $result[] = ["val" => "...", "type" => PaginatorType::Dots];
             }
     
-            // Poslední stránka se zobrazí vždy.
             $result[] = ["val" => $totalPages, "type" => PaginatorType::Page];
         }
     
-        // Volitelně můžeme přidat tlačítka "prev" a "next":
         if ($currentPage != 1) {
             array_unshift($result, ["val" => $this->options["prevText"], "type" => PaginatorType::Prev]);
         }
@@ -505,7 +590,23 @@ class Router {
         return ":{$port}";
     }
 
+    private function combineOptionalSegments(string $pattern): string {
+        while (preg_match('/(\[\/<[^>]+>\])\s*(\[(\/<[^>]+>)\])/', $pattern, $matches)) {
+            $first = $matches[1];
+            $second = $matches[2];
+            
+            $firstInner = substr($first, 1, -1); 
+            $secondInner = substr($second, 1, -1);
+            
+            $combined = '[' . $firstInner . '(?:' . $secondInner . ')?]';
+            
+            $pattern = str_replace($first . $second, $combined, $pattern);
+        }
+        return $pattern;
+    }
+
     public function add(string $path, string|callable $handler, bool $redirect = false): void {
+        $path = $this->combineOptionalSegments($path);
         $pattern = $this->buildRegexPattern($path);
         
         $this->routes[] = [
@@ -538,7 +639,7 @@ class Router {
                 if (is_callable($matchedRoute['handler'])) {
                     call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
                     return;
-                } elseif ($matchedRoute['redirect']) {
+                } else if ($matchedRoute['redirect']) {
                     $this->redirect($matchedRoute['handler']);
                 } else {
                     $this->processRouteHandler($matchedRoute, $key);
@@ -552,7 +653,7 @@ class Router {
         if (!is_string($route['handler'])) return;
 
         $handler = $route['handler'];
-        if ($route['variables']) {
+        if (!empty($route['variables'])) {
             foreach ($route['variables'] as $name => $value) {
                 $handler = str_replace("<{$name}>", $value, $handler);
             }
@@ -591,53 +692,32 @@ class Router {
     }
 
     private function buildRegexPattern(string $path): string {
-        // First, escape forward slashes
         $pattern = str_replace('/', '\\/', $path);
         
-        // Replace optional sections [/something] with non-capturing group
         $pattern = preg_replace_callback('/\[(.*?)\]/', function($match) {
             return '(?:' . $match[1] . ')?';
         }, $pattern);
         
-        // Replace parameters <param=default> with named capturing groups
         $pattern = preg_replace_callback('/\<([^>]+)\>/', function($match) {
             $parts = explode('=', $match[1]);
-            return '([^\/]+)'; // Capture anything except forward slash
+            $name = trim($parts[0]);
+            return '(?P<' . $name . '>[^\/]+)';
         }, $pattern);
         
         return $pattern;
     }
 
     private function extractRouteVariables(string $url, array $route, int $key): void {
-        $params = [];
-        preg_match_all('/\<([^>]+)\>/', $route['pattern'], $paramMatches);
-        
-        foreach ($paramMatches[1] as $param) {
-            if (str_contains($param, '=')) {
-                [$name, $default] = explode('=', $param, 2);
-                $params[$name] = $default;
-            } else {
-                $params[$param] = null;
+        if (preg_match('/^' . $route['regex'] . '$/U', $url, $matches)) {            
+            $params = [];
+            foreach ($matches as $keyName => $value) {
+                if (is_string($keyName)) {
+                    $params[$keyName] = $value !== '' ? $value : null;
+                }
             }
-        }
-
-        // Match URL against pattern and get values
-        preg_match('/^' . $route['regex'] . '$/U', $url, $matches);
-        array_shift($matches); // Remove full match
-
-        // Get parameter names in order they appear in the pattern
-        $orderedParams = array_keys($params);
-        
-        // Assign values to parameters, respecting the URL structure
-        foreach ($matches as $index => $value) {
-            if (isset($orderedParams[$index])) {
-                $paramName = $orderedParams[$index];
-                $params[$paramName] = $value !== '' ? $value : $params[$paramName];
+            if (!empty($params)) {
+                $this->routes[$key]['variables'] = $params;
             }
-        }
-
-        if (!empty($params)) {
-            $this->routes[$key]['variables'] = $params;
         }
     }
 
@@ -1583,7 +1663,7 @@ class Cookies {
 			foreach($name as $key => $val){
 				Cookies::set($key, $val, $value);
 			}
-		}elseif(gettype($name) == "array" && gettype($value) == "array"){
+		}else if(gettype($name) == "array" && gettype($value) == "array"){
 			for($i = 0; $i < count($name); $i++){
 				Cookies::set($name[$i], $value[$i], $time);
 			}
@@ -1739,6 +1819,7 @@ abstract class Model {
     protected static bool $primaryKeyAutoIncrement = true;
 
     protected $mappings = [];
+    protected $mappingsBack = [];
     protected Database $database;
     protected $attributes = [];
     protected ModelState $state = ModelState::New;
@@ -1750,10 +1831,12 @@ abstract class Model {
     }
 
     private function populate(array $data) {
-        $this->mappings = $this->getColumnMappings();
+        $this->getColumnMappings();
 
         if(!empty($data)) 
-            $this->state = ModelState::Loaded;
+            $this->state = ModelState::Loaded;        
+        else if (method_exists($this, 'onCreated'))
+            $this->onCreated();
 
         foreach ($data as $column => $value) {
             $property = array_search($column, $this->mappings, true);
@@ -1806,7 +1889,7 @@ abstract class Model {
         }
     }
 
-    private function getColumnMappings(): array {
+    private function getColumnMappings() {
         $reflector = new ReflectionClass($this);
 
         $docComment = $reflector->getDocComment();
@@ -1819,7 +1902,8 @@ abstract class Model {
         }
 
         $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
-        $mappings = [];
+        $this->mappings = [];
+        $this->mappingsBack = [];
         
         foreach ($properties as $property) {
             $docComment = $property->getDocComment();
@@ -1838,16 +1922,14 @@ abstract class Model {
             }
 
             $propName = $property->getName();
-            $mappings[$propName] = $column;
-            $mappings[$column] = $propName;
+            $this->mappings[$propName] = $column;
+            $this->mappingsBack[$column] = $propName;
         }
-
-        return $mappings;
     }
 
-    public static function findById(int|string $id): ?self {
+    public static function findById(int|string $id): ?static {
         $obj = (new static);
-        return $obj->where([static::$primaryKey => $id])->fetchSingle();
+        return $obj->where([static::$primaryKey => $id])->fetch();
     }
 
     public static function fetchAll(): ?array {
@@ -1870,10 +1952,28 @@ abstract class Model {
         return $builder->where($condition, $params);
     }
 
+    /**
+     * Delete the row in table by id
+     */
+    public function delete(): bool {
+        $db = $this->database->getConnection();
+        $primaryKey = static::$primaryKey;
+
+        if($primaryKey == null || $this->state === ModelState::New) {
+            throw new Exception("Primary key is not set for model ".get_class($this).", or the model was not saved so we can't delete the model");
+        }
+
+        $stmt = $db->prepare("DELETE FROM " . static::$table . " WHERE $primaryKey = ?");
+        $stmt->execute([$this->$primaryKey]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Save the model to database if the model is new it will insert the row, if the model is loaded it will update the row
+     */
     public function save(): bool {
         $db = $this->database->getConnection();
-        $mappings = $this->getColumnMappings();
-        $columns = array_map(fn($key) => $mappings[$key], array_keys($this->attributes));
+        $columns = array_map(fn($key) => $this->mappings[$key], array_keys($this->attributes));
         $primaryKey = static::$primaryKey;
 
         if($primaryKey == null) {
@@ -1882,7 +1982,7 @@ abstract class Model {
 
         $columns = [];
         $values = [];
-        foreach ($mappings as $property => $column) {
+        foreach ($this->mappings as $property => $column) {
             if ($property !== $primaryKey) { 
                 $columns[] = $column;
                 $values[] = $this->$property;
@@ -1929,6 +2029,7 @@ abstract class Model {
             $docComment = $method->getDocComment();
             if (!$docComment) continue;
 
+            //TODO: add support for fecthAll now it will return query builder
             if (preg_match('/@hasMany\("([^"]+)"\s*,\s*"?([^"]*)"?\)/', $docComment, $matches)) {
                 $relationships[$method->getName()] = [
                     'type' => 'hasMany',
@@ -1961,11 +2062,12 @@ abstract class Model {
         $relation = $relationships[$method];
         $result = null;
 
-        $foreignKey = $this->mappings[$relation['foreignKey']];
-        if ($relation['type'] === 'hasMany') {
-            $result = (new $relation['class'])
-                ->where([$foreignKey => $this->{static::$primaryKey}])
-                ->fetchAll();
+        $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
+        if ($relation['type'] === 'hasMany') {            
+            $className = "Models\\". $relation['class'];                        
+            $result = (new $className)
+                ->where([$foreignKey => $this->{static::$primaryKey}]);
+                //->fetchAll();
         }
         else if ($relation['type'] === 'belongsTo') {
             $foreignValue = $this->{$foreignKey};
@@ -1978,17 +2080,13 @@ abstract class Model {
     }
 
     public function __call($method, $args) {
-        try {
-            $relationships = $this->getRelationships();
-            
-            if (isset($relationships[$method])) {
-                return $this->loadRelationship($method);
-            }
-
-            return self::__call($method, $args);
-        } catch (Error $e) {
-            throw new Exception("Method $method not found in " . get_class($this));
+        $relationships = $this->getRelationships();
+    
+        if (isset($relationships[$method])) {
+            return $this->loadRelationship($method);
         }
+    
+        throw new Exception("Method $method not found in " . get_class($this));
     }
 }
 
@@ -2131,7 +2229,8 @@ class QueryBuilder {
 	}
 
 	public function count(): int {
-        $buildData = $this->buildSql(true);
+        $buildData = $this->buildSql(true);        
+        
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
             $stmt->bindValue($name, $value, Database::getPdoParamType($value));
@@ -2145,7 +2244,7 @@ class QueryBuilder {
 		return $result;
 	}
 
-	public function fetch(): array {
+	public function fetchAll(): array {
         $buildData = $this->buildSql(false);
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
@@ -2171,7 +2270,7 @@ class QueryBuilder {
     /**
      * @return T|null Returns an instance of the specified class or null if the record does not exist.
      */
-    public function fetchSingle(): ?Model {
+    public function fetch(): ?Model {
         $buildData = $this->buildSql(false);
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
@@ -2264,7 +2363,9 @@ class QueryBuilder {
         $binds = [];
         $queryType = $isCount ? "SELECT COUNT(*)" : "SELECT";
 
-        if (count($this->items) === 0) {
+        if ($isCount && count($this->items) === 0){
+            $sql[] = $queryType;
+        } else if (count($this->items) === 0) {
             $sql[] = $queryType . " *";
         } else {
             $columns = [];
@@ -2738,6 +2839,12 @@ class Response {
 
     public function status(?int $status = 0) : int | bool {
         return http_response_code($status);
+    }
+
+    public function write($content) {
+        echo $content;
+        ob_end_flush();
+        exit();
     }
 }
 

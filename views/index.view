@@ -1,7 +1,44 @@
 <h1>Hello {$model["user"]->login}</h1>
 Permission: {$model["user"]->permission()->print()}<br/>
 Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
-{$model["paginator"]->render()}
+<hr/>
+
+{if $model["action"] == "article.edit"}
+    {if $model["article"] == null}
+        <h2>New article</h2>
+    {else}
+        <h2>Edit article #{$model['article']->id}</h2>
+    {/if}
+    <form method="post">
+        <input type="hidden" name="id" value="{$model['article']->id}">
+        <label for="title">Title</label><br/>
+        <input type="text" name="title" value="{$model['article']->title}"><br/>
+        <label for="content">Content</label><br/>
+        <textarea name="content">{$model["article"]->content}</textarea><br/>
+        {if $model["article"] != null}
+            Created <i>{Date::ToString($model['article']->created)}</i> <a href="{~/article/delete/}{$model['article']->id}">Delete</a>
+        {/if}
+        <br/>
+        <input type="submit" value="Save">
+    </form>
+{else}
+    
+{/if}
+<hr/>
+<h2>Your articles</h2>
+<a href="{~/article/new/}">Create new article</a>
+<br/><br/>
+<table>
+    {for $model["articles"]->fetchAll() as $id => $article}
+        <tr>
+            <td>{$article->id}</td>
+            <td>{$article->title}</td>
+            <td>{Date::toString($article->created)}</td>
+            <td><a href="{~/article/edit/}{$article->id}">Edit</a> <a href="{~/article/delete/}{$article->id}">Delete</a></td>
+        </tr>
+    {/for}
+</table>
+{$model["articlesPaginator"]->render()}
 <hr/>
 {^$model["permission"]}
 <hr/>
@@ -10,6 +47,7 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
 {^$model["api"]}
 
 <style>
+    /* Paginator */
     ul.pagination { padding: 0; margin: 0; }
     ul.pagination li:not(.page-text) { 
         display: inline-block;
@@ -33,5 +71,41 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
         color: black;
         padding: 5px 10px;
         display: inline-block;
+    }
+    /* Tables */
+    table {
+        overflow: hidden;
+        background: #fff;
+        border: 1px solid silver;
+        border-collapse: collapse;
+    }
+
+    th, td {
+        padding: 12px 15px;
+        text-align: left;
+    }
+
+    th {
+        background: #007BFF;
+        color: #ffffff;
+        font-weight: bold;
+        text-transform: uppercase;
+    }
+
+    tr:nth-child(even) {
+        background: #f8f9fa;
+    }
+
+    tr:hover {
+        background: #e9ecef;
+    }
+
+    td {
+        border: none;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    tr:last-child td {
+        border-bottom: none;
     }
 </style>

@@ -1,11 +1,14 @@
 <?php
-error_reporting(E_ERROR | E_PARSE);
 //defined("DEBUG", true);
+if(!defined("DEBUG")) {
+    error_reporting(E_ERROR | E_PARSE);
+}
 require_once "./library.php";
 
 ob_start();
 
 use Models\User;
+use Models\Article;
 
 $container = Container::getInstance();
 
@@ -17,6 +20,7 @@ $userService = $container->get(UserService::class);
 $request = $container->get(Request::class);
 $response = $container->get(Response::class);
 
+Date::setTimezoneOffset(1); // +1 Europe/Prague
 $database->connect("127.0.0.1", "mini", "root", "");
 
 $router->add("", "view=index");
@@ -34,6 +38,7 @@ $router->add("apitest", function() use($response, $request) {
     }
     exit();
 });
+$router->add("article[/<action>][/<id>]", "view=article&action=<action>&id=<id>");
 
 $router->start();
 
@@ -59,16 +64,62 @@ echo "<html>";
             $user1 = User::findById(1);
 
             $http = new Http();
-            
-            $paginator = new Paginator(562, 10, Router::url());
+                        
+            $articleLimitOnPage = 10;
+            $articles = $user->articles();
+            $paginator = new Paginator($articles->count(), $articleLimitOnPage, Router::url(true));
+            $articles = $articles->order("created DESC")->limit($articleLimitOnPage)->page($paginator->getCurrentPage());
 
-            $layout->render(ROOT."/views/index.view", [
+            $model = [
                 "user" => $user, 
                 "permission" => $user->permission(),
-                "query" => $user1/*$builder->fetch()*/,
+                "query" => $user1/*$builder->fetchAll()*/,
                 "api" => $http->postJson(Router::url()."/apitest/")->getResponse(),
-                "paginator" => $paginator
-            ]);
+                "articlesPaginator" => $paginator,
+                "articles" => $articles
+            ];
+
+            if($_GET["view"] == "article" && $_GET["action"] == "new") {                
+                if(isset($_POST["title"])) {
+                    $article = new Article();
+                    $article->title = $_POST["title"];
+                    $article->content = $_POST["content"];
+                    $article->authorId = $user->id;
+                    $article->save();
+                    $router->redirect("/article/edit/".$article->id);
+                    exit();
+                }
+
+                $model["action"] = "article.edit";
+                $model["article"] = null;
+
+                $layout->render(ROOT."/views/index.view", $model);
+            } else if($_GET["view"] == "article" && $_GET["action"] == "edit") {
+                $article = Article::findById($_GET["id"]);
+                if($article == null) {
+                    $response->status(404);
+                    $response->write("Article not found");
+                }
+
+                if(isset($_POST["title"])) {
+                    $article->title = $_POST["title"];
+                    $article->content = $_POST["content"];
+                    $article->save();
+                    $router->redirect("/article/edit/".$article->id);
+                    exit();
+                }
+
+                $model["action"] = "article.edit";
+                $model["article"] = $article;
+
+                $layout->render(ROOT."/views/index.view", $model);
+            } else if($_GET["view"] == "article" && $_GET["action"] == "delete") {
+                $article = Article::findById($_GET["id"]);
+                $article->delete();
+                $router->redirect("/");
+            } else {
+                $layout->render(ROOT."/views/index.view", $model);
+            }                    
         }
 
         $page->footer();
