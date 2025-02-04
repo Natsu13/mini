@@ -45,6 +45,8 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
 {^$model["query"]}
 <hr/>
 {^$model["api"]}
+<hr/>
+{^$model["sql"]}
 
 <style>
     /* Paginator */

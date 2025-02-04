@@ -165,48 +165,56 @@ class Date {
 
         // Apply global timezone offset if set
         if (self::$timezoneOffset !== 0) {
-            $modifier = (self::$timezoneOffset > 0 ? "+".self::$timezoneOffset." hours" : self::$timezoneOffset." hours");
+            $modifier = (self::$timezoneOffset > 0 ? "+" . self::$timezoneOffset . " hours" : self::$timezoneOffset . " hours");
             $dt->modify($modifier);
         }
 
-        $day    = $dt->format('j');
+        $day      = $dt->format('j');
         $monthNum = $dt->format('m');
-        $year   = $dt->format('Y');
-        $hour   = $dt->format('H');
-        $minute = $dt->format('i');
-        
+        $year     = $dt->format('Y');
+        $hour     = $dt->format('H');
+        $minute   = $dt->format('i');
+
         // Get the English name of the month
         $month = self::month($monthNum);
-        
-        // Return only date if requested
+
+        // Return only the date if requested
         if ($withoutTime) {
             return $day . ". " . $month . " " . $year;
         }
-        
-        // If no special conversion is requested, return standard format
+
+        // If no special conversion is requested, return the standard format
         if (!$noConvert) {
             return $day . ". " . $month . " at " . $hour . ":" . $minute;
         }
-        
+
         // Create a DateTime object for the current moment
         $now = new DateTime();
-        $interval = $now->diff($dt);
-        $inPast = $dt < $now;
-        $diffDays = (int)$interval->format('%a');
-        
-        // Decide how to format the string based on the difference in days
+
+        // Compare only the calendar dates (Y-m-d)
+        $nowDate = $now->format('Y-m-d');
+        $dtDate  = $dt->format('Y-m-d');
+
+        // Create DateTime objects for the start of the day (00:00:00) for both dates
+        $todayStart = new DateTime($nowDate);
+        $dtStart    = new DateTime($dtDate);
+
+        // Calculate the difference in days, preserving the sign (%r)
+        $diffInterval = $todayStart->diff($dtStart);
+        $diffDays = (int)$diffInterval->format('%r%a');
+
+        // Decide how to format the string based on the difference in calendar days
         if ($diffDays === 0) {
             // Today
             $formatted = "Today at " . $hour . ":" . $minute;
+        } else if ($diffDays === -1) {
+            // Yesterday
+            $formatted = "Yesterday at " . $hour . ":" . $minute;
         } else if ($diffDays === 1) {
-            // Yesterday or Tomorrow
-            if ($inPast) {
-                $formatted = "Yesterday at " . $hour . ":" . $minute;
-            } else {
-                $formatted = "Tomorrow at " . $hour . ":" . $minute;
-            }
+            // Tomorrow
+            $formatted = "Tomorrow at " . $hour . ":" . $minute;
         } else {
-            // For dates with a difference greater than one day
+            // For other days
             if ($year === $now->format('Y')) {
                 // If within the current year, include time but not the year
                 $formatted = $day . " " . $month . " at " . $hour . ":" . $minute;
@@ -215,7 +223,7 @@ class Date {
                 $formatted = $day . ". " . $month . " " . $year;
             }
         }
-        
+
         return $formatted;
     }
 }
@@ -2087,6 +2095,104 @@ abstract class Model {
         }
     
         throw new Exception("Method $method not found in " . get_class($this));
+    }
+
+    /**
+     * Generates an SQL CREATE TABLE statement based on the model's annotations and properties.
+     *
+     * @param string $modelClass Fully qualified class name of the model.
+     * @return string The generated SQL statement.
+     * @throws Exception If the table name annotation is not found.
+     */
+    public static function generateCreateTableQuery(string $modelClass): string {
+        $reflection = new ReflectionClass($modelClass);
+
+        // Parse the table name from the class doc comment (e.g. @table("articles"))
+        $docComment = $reflection->getDocComment();
+        if (!$docComment || !preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
+            throw new Exception("Table annotation (@table(...)) not found in class {$modelClass}");
+        }
+        $tableName = $matches[1];
+
+        $columns = [];
+        // Iterate over public properties
+        foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            // Default column name is the property name
+            $columnName = $property->getName();
+
+            // Check if there is a @column("...") annotation to override the column name
+            $propDoc = $property->getDocComment();
+            if ($propDoc && preg_match('/@column\("([^"]+)"\)/', $propDoc, $colMatch)) {
+                $columnName = $colMatch[1];
+            }
+
+            // Determine the PHP type of the property and map it to an SQL type
+            $type = $property->getType();
+            $typeName = $type ? $type->getName() : 'string';
+
+            // Map PHP types to SQL types – extend this mapping as needed
+            switch ($typeName) {
+                case 'int':
+                    $sqlType = 'INT';
+                    break;
+                case 'float':
+                    $sqlType = 'FLOAT';
+                    break;
+                case 'bool':
+                    // V některých databázích lze použít BOOLEAN, případně TINYINT(1)
+                    $sqlType = 'BOOLEAN';
+                    break;
+                case 'string':
+                default:
+                    $sqlType = 'TEXT';
+            }
+
+            // Check if the property is marked as primary key (@primaryKey)
+            $primaryKey = ($propDoc && strpos($propDoc, '@primaryKey') !== false);
+
+            // Determine nullability: if the type allows null, use NULL, otherwise NOT NULL.
+            $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';            
+
+            // Check if auto increment is disabled via annotation @autoIncrementDisabled
+            $autoIncrementDisabled = ($propDoc && strpos($propDoc, '@autoIncrementDisabled') !== false);
+
+            // Check for default value annotation, e.g. @default(123) nebo @default("abc")
+            $defaultClause = "";
+            if ($propDoc && preg_match('/@default\(([^)]+)\)/', $propDoc, $defaultMatch)) {
+                $defaultValue = trim($defaultMatch[1]);
+
+                // Pokud se jedná o řetězec, zajistíme uvozovky.
+                // Předpokládáme, že pokud default hodnota nezačíná a nekončí uvozovkami, je třeba ji přidat.
+                if ($typeName === 'string') {
+                    if ($defaultValue[0] !== "'" && $defaultValue[0] !== '"' ) {
+                        $defaultValue = "'" . $defaultValue . "'";
+                    }
+                } else if ($typeName === 'bool') {
+                    // Převedeme bool na SQL hodnotu (TRUE/FALSE)
+                    $defaultValue = (strtolower($defaultValue) === 'true' || $defaultValue === '1') ? 'TRUE' : 'FALSE';
+                }
+                // U int a float necháme hodnotu tak, jak je.
+                $defaultClause = " DEFAULT " . $defaultValue;
+            }
+
+            // Build the column definition
+            $colDefinition = "`{$columnName}` {$sqlType} {$nullability}";
+            if ($primaryKey) {
+                $colDefinition .= " PRIMARY KEY";
+                // If the primary key is of type INT and auto-increment is not disabled, add AUTO_INCREMENT.
+                if ($sqlType === 'INT' && !$autoIncrementDisabled) {
+                    $colDefinition .= " AUTO_INCREMENT";
+                }
+            }
+            // Append default clause if defined
+            $colDefinition .= $defaultClause;
+
+            $columns[] = $colDefinition;
+        }
+
+        $columnsSql = implode(",\n    ", $columns);
+        $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}\n);";
+        return $sql;
     }
 }
 
