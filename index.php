@@ -77,7 +77,7 @@ echo "<html>";
                 "api" => $http->postJson(Router::url()."/apitest/")->getResponse(),
                 "articlesPaginator" => $paginator,
                 "articles" => $articles,
-                "sql" => \Model::generateCreateTableQuery(Article::class)
+                "sql" => \Model::generateCreateTableQuery(User::class)
             ];
 
             if($_GET["view"] == "article" && $_GET["action"] == "new") {                

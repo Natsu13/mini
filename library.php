@@ -1828,6 +1828,8 @@ abstract class Model {
 
     protected $mappings = [];
     protected $mappingsBack = [];
+    protected $columnsDefinition = [];
+
     protected Database $database;
     protected $attributes = [];
     protected ModelState $state = ModelState::New;
@@ -1912,10 +1914,12 @@ abstract class Model {
         $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
         $this->mappings = [];
         $this->mappingsBack = [];
+        $this->columnsDefinition = []; 
         
         foreach ($properties as $property) {
             $docComment = $property->getDocComment();
             $column = $property->getName();
+            $length = null;
 
             if (strpos($docComment, '@primaryKey') !== false) {
                 static::$primaryKey = $column;
@@ -1929,9 +1933,16 @@ abstract class Model {
                 $column = $matches[1];
             }
 
+            if (preg_match('/@length\((\d+)\)/', $docComment, $lengthMatch)) {
+                $length = (int)$lengthMatch[1];
+            }
+
             $propName = $property->getName();
             $this->mappings[$propName] = $column;
             $this->mappingsBack[$column] = $propName;
+            $this->columnsDefinition[$column] = [
+                "length" => $length
+            ];
         }
     }
 
@@ -1991,9 +2002,17 @@ abstract class Model {
         $columns = [];
         $values = [];
         foreach ($this->mappings as $property => $column) {
-            if ($property !== $primaryKey) { 
+            if ($property !== $primaryKey) {
                 $columns[] = $column;
-                $values[] = $this->$property;
+                $value = $this->$property;
+                // Pokud je definována délka pro daný sloupec a hodnota je typu string, ořízneme ji
+                if (isset($this->columnsDefinition[$column]['length']) && is_string($value)) {
+                    $maxLength = $this->columnsDefinition[$column]['length'];
+                    if ($maxLength !== null && mb_strlen($value) > $maxLength) {
+                        $value = mb_substr($value, 0, $maxLength);
+                    }
+                }
+                $values[] = $value;
             }
         }
         
@@ -2101,13 +2120,15 @@ abstract class Model {
      * Generates an SQL CREATE TABLE statement based on the model's annotations and properties.
      *
      * @param string $modelClass Fully qualified class name of the model.
+     * @param string $defaultCharset Default charset for the table (default: utf8)
+     * @param string $defaultCollation Default collation for text-based columns (default: utf8_bin)
      * @return string The generated SQL statement.
      * @throws Exception If the table name annotation is not found.
      */
-    public static function generateCreateTableQuery(string $modelClass): string {
+    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin"): string {
         $reflection = new ReflectionClass($modelClass);
 
-        // Parse the table name from the class doc comment (e.g. @table("articles"))
+        // Parse table name from class doc comment, e.g. @table("users")
         $docComment = $reflection->getDocComment();
         if (!$docComment || !preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
             throw new Exception("Table annotation (@table(...)) not found in class {$modelClass}");
@@ -2115,83 +2136,121 @@ abstract class Model {
         $tableName = $matches[1];
 
         $columns = [];
-        // Iterate over public properties
+        // Uložíme si mapu definovaných sloupců, abychom mohli ověřit, zda u asociací existuje cizí klíč.
+        $definedColumns = [];
+
+        // Zpracování veřejných vlastností (columns)
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
-            // Default column name is the property name
             $columnName = $property->getName();
 
-            // Check if there is a @column("...") annotation to override the column name
             $propDoc = $property->getDocComment();
             if ($propDoc && preg_match('/@column\("([^"]+)"\)/', $propDoc, $colMatch)) {
                 $columnName = $colMatch[1];
             }
 
-            // Determine the PHP type of the property and map it to an SQL type
             $type = $property->getType();
             $typeName = $type ? $type->getName() : 'string';
 
-            // Map PHP types to SQL types – extend this mapping as needed
-            switch ($typeName) {
-                case 'int':
-                    $sqlType = 'INT';
-                    break;
-                case 'float':
-                    $sqlType = 'FLOAT';
-                    break;
-                case 'bool':
-                    // V některých databázích lze použít BOOLEAN, případně TINYINT(1)
-                    $sqlType = 'BOOLEAN';
-                    break;
-                case 'string':
-                default:
-                    $sqlType = 'TEXT';
+            $length = null;
+            if ($propDoc && preg_match('/@length\((\d+)\)/', $propDoc, $lengthMatch)) {
+                $length = (int)$lengthMatch[1];
             }
 
-            // Check if the property is marked as primary key (@primaryKey)
+            // Inicializace proměnné pro přídavek COLLATE
+            $charset = "";
+            if ($typeName === 'string') {
+                if ($length) {
+                    $sqlType = "varchar({$length})";
+                } else {
+                    $sqlType = "text";
+                }
+                $charset = " COLLATE {$defaultCollation}";
+            } else {
+                switch ($typeName) {
+                    case 'int':
+                        $sqlType = $length !== null ? "int({$length})" : "int";
+                        break;
+                    case 'float':
+                        $sqlType = 'float';
+                        break;
+                    case 'bool':
+                        $sqlType = 'boolean';
+                        break;
+                    default:
+                        $sqlType = 'text';
+                        $charset = " COLLATE {$defaultCollation}";
+                }
+            }
+
             $primaryKey = ($propDoc && strpos($propDoc, '@primaryKey') !== false);
-
-            // Determine nullability: if the type allows null, use NULL, otherwise NOT NULL.
-            $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';            
-
-            // Check if auto increment is disabled via annotation @autoIncrementDisabled
+            // Pokud typ umožňuje null a nejde o primární klíč, nastavíme NULL, jinak NOT NULL.
+            $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';
             $autoIncrementDisabled = ($propDoc && strpos($propDoc, '@autoIncrementDisabled') !== false);
 
-            // Check for default value annotation, e.g. @default(123) nebo @default("abc")
             $defaultClause = "";
             if ($propDoc && preg_match('/@default\(([^)]+)\)/', $propDoc, $defaultMatch)) {
                 $defaultValue = trim($defaultMatch[1]);
-
-                // Pokud se jedná o řetězec, zajistíme uvozovky.
-                // Předpokládáme, že pokud default hodnota nezačíná a nekončí uvozovkami, je třeba ji přidat.
                 if ($typeName === 'string') {
-                    if ($defaultValue[0] !== "'" && $defaultValue[0] !== '"' ) {
+                    if ($defaultValue[0] !== "'" && $defaultValue[0] !== '"') {
                         $defaultValue = "'" . $defaultValue . "'";
                     }
                 } else if ($typeName === 'bool') {
-                    // Převedeme bool na SQL hodnotu (TRUE/FALSE)
                     $defaultValue = (strtolower($defaultValue) === 'true' || $defaultValue === '1') ? 'TRUE' : 'FALSE';
                 }
-                // U int a float necháme hodnotu tak, jak je.
                 $defaultClause = " DEFAULT " . $defaultValue;
             }
 
-            // Build the column definition
-            $colDefinition = "`{$columnName}` {$sqlType} {$nullability}";
+            $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability}";
             if ($primaryKey) {
                 $colDefinition .= " PRIMARY KEY";
-                // If the primary key is of type INT and auto-increment is not disabled, add AUTO_INCREMENT.
-                if ($sqlType === 'INT' && !$autoIncrementDisabled) {
+                // Pro auto_increment platí, že pokud se jedná o int a není zakázáno, přidáme AUTO_INCREMENT.
+                if ($typeName === 'int' && !$autoIncrementDisabled) {
                     $colDefinition .= " AUTO_INCREMENT";
                 }
             }
-            // Append default clause if defined
             $colDefinition .= $defaultClause;
 
             $columns[] = $colDefinition;
+            $definedColumns[$columnName] = true;
+        }
+
+        $keys = [];
+        $foreignKeys = [];
+        $keysAdded = []; // abychom nepřidali duplicitní index
+
+        // Zpracování soukromých metod pro asociace (hasOne a hasMany)
+        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE) as $method) {
+            $methodDoc = $method->getDocComment();
+            if (!$methodDoc) {
+                continue;
+            }
+            // Zpracujeme hasOne (u hasMany se cizí klíč nachází na straně druhé tabulky)
+            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {
+                $relatedClass = $match[1];
+                // Pokud je zadán druhý parametr, použijeme jej jako název cizího klíče, jinak odvodíme z názvu metody.
+                $foreignKeyColumn = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';
+                // Vygenerujeme cizí klíč a index, pouze pokud je sloupec definován mezi veřejnými vlastnostmi.
+                if (isset($definedColumns[$foreignKeyColumn])) {
+                    // Přidáme index, pokud jsme ho zatím nepřidali.
+                    if (!isset($keysAdded[$foreignKeyColumn])) {
+                        $indexName = preg_replace('/_id$/', '', $foreignKeyColumn);
+                        if ($indexName === "") {
+                            $indexName = $foreignKeyColumn;
+                        }
+                        $keys[] = "KEY `{$indexName}` (`{$foreignKeyColumn}`)";
+                        $keysAdded[$foreignKeyColumn] = true;
+                    }
+                    $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$foreignKeyColumn}` FOREIGN KEY (`{$foreignKeyColumn}`) REFERENCES `" . strtolower($relatedClass) . "` (`id`) ON DELETE NO ACTION ON UPDATE NO ACTION";
+                }
+            }
         }
 
         $columnsSql = implode(",\n    ", $columns);
-        $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}\n);";
+        // Pokud máme indexy a/nebo cizí klíče, přidáme je za definice sloupců.
+        $constraints = array_merge($keys, $foreignKeys);
+        $constraintsSql = !empty($constraints) ? ",\n    " . implode(",\n    ", $constraints) : "";
+
+        $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}{$constraintsSql}\n) ENGINE=InnoDB DEFAULT CHARSET={$defaultCharset} COLLATE={$defaultCollation};";
         return $sql;
     }
 }

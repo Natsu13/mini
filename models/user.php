@@ -13,11 +13,15 @@ class User extends \Model {
     /** @primaryKey */
     public ?int $id;
 
-    /** @column("login") */
+    /** @column("login")
+     *  @length(100)
+    */
     public string $login;
 
+    /** @length(100) */
     public string $password;
 
+    /** @length(100) */
     public string $email;
 
     /** @column("permission_id") */

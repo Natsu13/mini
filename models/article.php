@@ -15,6 +15,7 @@ class Article extends \Model {
     /** @column("author_id") */
     public int $authorId;
 
+    /** @length(200) */
     public string $title;
 
     public string $content;
