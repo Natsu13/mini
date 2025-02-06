@@ -1,0 +1,3 @@
+<h1>{$model["article"]->title}</h1>
+<i>{Date::ToString($model['article']->created)}</i>
+<p>{$model["article"]->content}</p>

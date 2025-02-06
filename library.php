@@ -1,4 +1,8 @@
 <?php
+if(!defined("DEBUG")) {
+    error_reporting(E_ERROR | E_PARSE);
+}
+
 spl_autoload_register(function ($class) {    
     $file = str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php';
 
@@ -557,6 +561,69 @@ class Container {
 
         return new $class();
     }
+
+    /**
+     * Create instance of the specified class with the given arguments.
+     * On end of the constructor can be specified arguments of the registered classed in the container.
+     * 
+     * @template T
+     * @param class-string<T> $class The name of the model class, eg Layout
+     * @return T|null Returns an instance of the specified class or null if the record does not exist
+     */
+    public function create(string $class, ...$args) {
+        $reflection = new ReflectionClass($class);
+        $constructor = $reflection->getConstructor();
+    
+        if (!$constructor) {
+            return new $class(...$args);
+        }
+    
+        $params = $constructor->getParameters();
+        $resolvedArgs = [];
+    
+        $containerParamsCount = 0;
+        for ($i = count($params) - 1; $i >= 0; $i--) {
+            $param = $params[$i];
+            $type = $param->getType();
+            if ($type && !$type->isBuiltin() && isset($this->services[$type->getName()])) {
+                $containerParamsCount++;
+            } else {
+                break;
+            }
+        }
+        
+        $manualArgsCount = count($args) - $containerParamsCount;
+        if ($manualArgsCount < 0) {
+            throw new Exception("Too few arguments were passed.");
+        }
+        $manualArgs = array_slice($args, 0, $manualArgsCount);
+        $containerOverrides = array_slice($args, $manualArgsCount);
+    
+        $manualIndex = 0;
+        $containerIndex = 0;
+    
+        foreach ($params as $param) {
+            $type = $param->getType();
+            
+            if ($type && !$type->isBuiltin() && isset($this->services[$type->getName()])) {
+                if (isset($containerOverrides[$containerIndex])) {
+                    $resolvedArgs[] = $containerOverrides[$containerIndex++];
+                } else {
+                    $resolvedArgs[] = $this->get($type->getName());
+                }
+            } else {
+                if (isset($manualArgs[$manualIndex])) {
+                    $resolvedArgs[] = $manualArgs[$manualIndex++];
+                } elseif ($param->isDefaultValueAvailable()) {
+                    $resolvedArgs[] = $param->getDefaultValue();
+                } else {
+                    throw new Exception("Missing value for parameter '{$param->getName()}'");
+                }
+            }
+        }
+    
+        return $reflection->newInstanceArgs($resolvedArgs);
+    }
 }
 
 class Router {
@@ -564,9 +631,12 @@ class Router {
     private ?string $matchedUrl = null;
     private ?array $routeData = null;
     private string $baseUrl;
+    private ?ControllerAction $controllerData = null;
+    private Layout $layout;
 
     public function __construct() {
         $this->baseUrl = $this->generateBaseUrl();
+        $this->layout = Container::getInstance()->get(Layout::class);
     }
 
     public static function url(bool $full = false, bool $_request = false): string {
@@ -613,7 +683,7 @@ class Router {
         return $pattern;
     }
 
-    public function add(string $path, string|callable $handler, bool $redirect = false): void {
+    public function add(string $path, string|callable|array $handler, bool $redirect = false): void {
         $path = $this->combineOptionalSegments($path);
         $pattern = $this->buildRegexPattern($path);
         
@@ -642,11 +712,14 @@ class Router {
 
         foreach ($this->routes as $key => $route) {
             if ($this->matchRoute($url, $route, $key)) {
-                $matchedRoute = $this->routes[$key];
+                $matchedRoute = $this->routes[$key];                
                 
                 if (is_callable($matchedRoute['handler'])) {
                     call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
                     return;
+                } else if (is_array($matchedRoute['handler'])) {
+                    $this->processVariables($matchedRoute['variables']);
+                    $this->callController($matchedRoute['handler']);
                 } else if ($matchedRoute['redirect']) {
                     $this->redirect($matchedRoute['handler']);
                 } else {
@@ -655,6 +728,75 @@ class Router {
                 break;
             }
         }
+    }
+
+    private function processVariables($variables) {
+        foreach($variables as $name => $value) {
+            $_GET[$name] = $value;
+        }
+    }
+
+    private function callController($definition){
+        if(!is_array($definition)) throw new Exception("Definition must be array [class, method]");        
+        $class = $originalClass = $definition[0];
+        $method = count($definition) > 1? $definition[1]: "index";
+        
+        if(substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\". $class;          
+        if(!class_exists($class) && class_exists($class."Controller")) $class .= "Controller";
+
+        if(!class_exists($class)) 
+            throw new Exception("Class $originalClass not exists");
+        if(!is_subclass_of($class, "Controller")) 
+            throw new Exception("Class $originalClass not implement class \"Controller\"");
+
+        $instance = Container::getInstance()->create($class);
+
+        if(!method_exists($instance, $method)) 
+            throw new Exception("Method $method not found in class $class");        
+
+        $reflectionMethod = new ReflectionMethod($instance, $method);
+        $methodParams = $reflectionMethod->getParameters();
+        $resolvedParams = [];
+        foreach ($methodParams as $param) {
+            $name = $param->getName();
+            if (isset($_GET[$name])) {
+                $resolvedParams[] = $_GET[$name];
+            } elseif (isset($_POST[$name])) {
+                $resolvedParams[] = $_POST[$name];
+            } elseif (isset($_SERVER[$name])) {
+                $resolvedParams[] = $_SERVER[$name];
+            } elseif (isset($_FILES[$name])) {
+                $resolvedParams[] = $_FILES[$name];
+            } elseif ($param->isDefaultValueAvailable()) {
+                $resolvedParams[] = $param->getDefaultValue();
+            } else {
+                throw new Exception("Missing value for parameter '$name' of method $method in class $class");
+            }
+        }
+                
+        $this->controllerData = $reflectionMethod->invokeArgs($instance, $resolvedParams);
+    }
+
+    public function tryProcessController(): bool {
+        if($this->controllerData == null)
+            return false;        
+
+        if($this->controllerData->getType() == ControllerActionType::View) {
+            $class = $this->controllerData->getClass();
+            $view = $this->controllerData->getView();
+            $model = $this->controllerData->getModel();
+            
+            $viewFile = file_exists(ROOT."/views/{$class}/{$view}.view")? ROOT."/views/{$class}/{$view}.view": ROOT."/views/{$view}.view";
+            if(file_exists($viewFile)) {
+                $this->layout->render($viewFile, $model);
+            } else {
+                throw new Exception("View file not found: /views/{$class}/{$view}.view, /views/{$view}.view");
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     private function processRouteHandler(array $route, int $key): void {
@@ -3010,6 +3152,69 @@ class Response {
         echo $content;
         ob_end_flush();
         exit();
+    }
+}
+
+enum ControllerActionType {
+    case None;
+    case View;
+}
+
+class ControllerAction {
+    private ControllerActionType $type = ControllerActionType::None;
+    private array $params = [];
+
+    public function getType(): ControllerActionType {
+        return $this->type;
+    }
+
+    public function getParams(): array {
+        return $this->params;
+    }
+
+    public function getClass(): string {
+        if($this->type != ControllerActionType::View) throw new Exception("getClass can be called only for View type");
+        $class = $this->params["class"];
+        if(substr($class, 0, strlen("Controllers\\")) == "Controllers\\") {
+            $class = substr($class, strlen("Controllers\\"));
+        }
+        return strtolower($class);
+    }
+
+    public function getView(): string {
+        if($this->type != ControllerActionType::View) throw new Exception("getView can be called only for View type");
+        return $this->params["view"];
+    }
+
+    public function getModel(): array {
+        if($this->type != ControllerActionType::View) throw new Exception("getModel can be called only for View type");
+        return $this->params["model"];
+    }
+
+    public static function makeViewModel($class, $view, $model) {
+        $viewModel = new ControllerAction();
+        $viewModel->params = [
+            "class" => $class,
+            "view" => $view,
+            "model" => $model
+        ];
+        $viewModel->type = ControllerActionType::View;
+        return $viewModel;
+    }
+}
+
+class Controller {
+    protected function view($name, $model = null) {
+        $className = get_class($this);
+        $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3);
+        $callerFunction = isset($backtrace[1]['function']) ? $backtrace[1]['function'] : null;
+
+        if (($name === null || !is_string($name)) && $model === null && $callerFunction !== null) {
+            $model = $name;
+            $name = $callerFunction;
+        }
+
+        return ControllerAction::makeViewModel($className, $name, $model);
     }
 }
 

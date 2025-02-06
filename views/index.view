@@ -34,7 +34,7 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
             <td>{$article->id}</td>
             <td>{$article->title}</td>
             <td>{Date::toString($article->created)}</td>
-            <td><a href="{~/article/edit/}{$article->id}">Edit</a> <a href="{~/article/delete/}{$article->id}">Delete</a></td>
+            <td><a href="{~/article/}{$article->id}">View</a> <a href="{~/article/edit/}{$article->id}">Edit</a> <a href="{~/article/delete/}{$article->id}">Delete</a></td>
         </tr>
     {/for}
 </table>
