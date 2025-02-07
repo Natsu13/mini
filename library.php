@@ -412,9 +412,8 @@ class Paginator {
 
         if ($this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
             $html[] = sprintf(
-                '<li class="%s"><span class="%s">Celkem: %d</span></li>',
-                $this->options['itemClass'],
-                $this->options['linkClass'],
+                '<li class="%s">Celkem: <span>%d</span></li>',
+                $this->options['textClass'],
                 $this->totalItems
             );
         }
@@ -428,7 +427,7 @@ class Paginator {
 
         if ($this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
             $html[] = sprintf(
-                '<li class="%s"><span>Celkem: %d</span></li>',
+                '<li class="%s">Celkem: <span>%d</span></li>',
                 $this->options['textClass'],
                 $this->totalItems
             );
