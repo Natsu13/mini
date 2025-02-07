@@ -1,4 +1,6 @@
 <?php
+define("USE_USERS", 1);
+
 if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
 }
@@ -12,8 +14,6 @@ spl_autoload_register(function ($class) {
         throw new Exception("File not found: ".$file);
     }
 });
-
-use Models\User;
 
 define("ROOT", str_replace("\\", "/", getcwd()));
 
@@ -2749,87 +2749,89 @@ class QueryBuilder {
     }
 }
 
-enum UserServiceCheck {
-    case Ok;
-    case EmailExists;
-    case EmailInvalid;
-    case LoginExists;
-    case PasswordBad;    
-    case Unknown;
-}
-
-enum UserServiceLogin {
-    case Ok;
-    case WrongPassword;
-    case WrongLogin;
-}
-
-class UserService {
-    private Router $router;
-
-    public function __construct(Router $router) {
-        $this->router = $router;
+if(defined("USE_USERS")) {
+    enum UserServiceCheck {
+        case Ok;
+        case EmailExists;
+        case EmailInvalid;
+        case LoginExists;
+        case PasswordBad;    
+        case Unknown;
     }
 
-    public function check(string $login, string $email): UserServiceCheck {
-        if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
-
-        $user = User::find($login, $email);
-        if($user == null) return UserServiceCheck::Ok;
-
-        if($user->login == $login) return UserServiceCheck::LoginExists;
-        if($user->email == $email) return UserServiceCheck::EmailExists;
-
-        return UserServiceCheck::Unknown;
+    enum UserServiceLogin {
+        case Ok;
+        case WrongPassword;
+        case WrongLogin;
     }
 
-    public function register(string $login, string $password, string $email): User | UserServiceCheck {
-        $state = $this->check($login, $email);
+    class UserService {
+        private Router $router;
 
-        if($state == UserServiceCheck::Ok) {
-            $user = new Models\User();
-            $user->login = $login;
-            $user->password = sha1($password);
-            $user->email = $email;
-            $user->save();
-
-            return $user;
+        public function __construct(Router $router) {
+            $this->router = $router;
         }
 
-        return $state;
-    }
+        public function check(string $login, string $email): UserServiceCheck {
+            if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
 
-    /**
-     * Check if current user is authentificated
-     * @return bool
-     */
-    public function isAuthentificated(): bool {
-        if(Cookies::security_check("userId")) {
-            $userId = $_COOKIE["userId"];
-            $user = User::findById($userId);
-            if($user != null) return true;            
+            $user = Models\User::find($login, $email);
+            if($user == null) return UserServiceCheck::Ok;
+
+            if($user->login == $login) return UserServiceCheck::LoginExists;
+            if($user->email == $email) return UserServiceCheck::EmailExists;
+
+            return UserServiceCheck::Unknown;
         }
-        return false;
-    }
 
-    public function login(string $login, string $password): UserServiceLogin {
-        $user = User::find($login, $login);
+        public function register(string $login, string $password, string $email): Models\User | UserServiceCheck {
+            $state = $this->check($login, $email);
 
-        if($user == null) return UserServiceLogin::WrongLogin;
-        if($user->password != sha1($password)) return UserServiceLogin::WrongPassword;
+            if($state == UserServiceCheck::Ok) {
+                $user = new Models\User();
+                $user->login = $login;
+                $user->password = sha1($password);
+                $user->email = $email;
+                $user->save();
 
-        Cookies::set("userId", $user->id, "+24 hours");
+                return $user;
+            }
 
-        return UserServiceLogin::Ok;
-    }
+            return $state;
+        }
 
-    public function logout() {
-        Cookies::delete("userId");
-    }
+        /**
+         * Check if current user is authentificated
+         * @return bool
+         */
+        public function isAuthentificated(): bool {
+            if(Cookies::security_check("userId")) {
+                $userId = $_COOKIE["userId"];
+                $user = Models\User::findById($userId);
+                if($user != null) return true;            
+            }
+            return false;
+        }
 
-    public function current(): ?User {
-        if(!$this->isAuthentificated()) return null;
-        return User::findById($_COOKIE["userId"]);
+        public function login(string $login, string $password): UserServiceLogin {
+            $user = Models\User::find($login, $login);
+
+            if($user == null) return UserServiceLogin::WrongLogin;
+            if($user->password != sha1($password)) return UserServiceLogin::WrongPassword;
+
+            Cookies::set("userId", $user->id, "+24 hours");
+
+            return UserServiceLogin::Ok;
+        }
+
+        public function logout() {
+            Cookies::delete("userId");
+        }
+
+        public function current(): ?Models\User {
+            if(!$this->isAuthentificated()) return null;
+            return Models\User::findById($_COOKIE["userId"]);
+        }
     }
 }
 
@@ -3225,6 +3227,9 @@ $container->setSingleton(Router::class);
 $container->setSingleton(Page::class);
 $container->setSingleton(Layout::class);
 $container->setSingleton(Database::class);
-$container->setSingleton(UserService::class);
 $container->setSingleton(Request::class);
 $container->setSingleton(Response::class);
+
+if(defined("USE_USERS")) {
+    $container->setSingleton(UserService::class);
+}
