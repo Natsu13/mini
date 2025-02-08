@@ -785,7 +785,7 @@ class Router {
             $view = $this->controllerData->getView();
             $model = $this->controllerData->getModel();
             
-            $viewFile = file_exists(ROOT."/views/{$class}/{$view}.view")? ROOT."/views/{$class}/{$view}.view": ROOT."/views/{$view}.view";
+            $viewFile = !file_exists(ROOT."/views/{$class}/{$view}.view")? ROOT."/views/{$view}.view": ROOT."/views/{$class}/{$view}.view";
             if(file_exists($viewFile)) {
                 $this->layout->render($viewFile, $model);
             } else {
