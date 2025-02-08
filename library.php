@@ -2865,7 +2865,7 @@ class Http {
 		$this->lastCurlDebug = null;
 		$this->lastErrno = 0;
 		$this->headers = array(
-			"Accept" => "application/json",
+			"Accept" => "*/*",
 			"Content-Type" => "application/x-www-form-urlencoded"
 		);
 	}
