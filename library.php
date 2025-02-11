@@ -1421,7 +1421,7 @@ class TemplaterV2 {
     private function renderControll($input, $token) {
         $controll = explode(" ", $input, 2);
 		$type = trim($controll[0]);
-        $value = trim($controll[1]);
+        $value = count($controll) > 1? trim($controll[1]): "";
 
         if(substr($type[0], 0, 1) == "~" ){
 			$url = trim(substr($input, 1, strlen($input) - 1));
@@ -1464,9 +1464,10 @@ class TemplaterV2 {
 			$ro = explode("=", $value, 2);
             return "<?php if(!isset(".$ro[0].")) { ".$ro[1]." } ?>";
         } else if($type == "include") {
-            throw new Exception("Reimplmenent the include!");
 			$params = $this->parserParams($value, 1);
-			return "<?php Bootstrap::\$self->getContainer()->get('page')->template_parse(_ROOT_DIR . \"/views/\".".$params[0].".\".view\", array(".$params[1].")); ?>";
+            $name = $this->toPhp($params[0]);
+            $parameters = $this->toPhp($params[1]);
+			return "<?php Container::getInstance()->get(Layout::class)->render(ROOT . \"/views/".$name.".view\", ".$parameters."); ?>";
         } else if($type == "capture") {
 			$output = "<?php ob_start(); ?>";
 
@@ -1527,6 +1528,24 @@ class TemplaterV2 {
         }
 
         return "<?php echo ".$input."; ?>";
+    }
+
+    private function toPhp($code) {
+        $code = trim($code);
+
+        if(substr($code, 0, 1) == "[" && substr($code, strlen($code) -1, 1) == "]") {
+            return "array(".substr($code, 1, strlen($code) - 2).")";
+        }  
+        if(strpos($code, ",") !== false || strpos($code, "=>") !== false) {
+            return "array(".$code.")";
+        }
+        if(substr($code, 0, 1) == "\"" && substr($code, strlen($code) -1, 1) == "\"") {
+            return substr($code, 1, strlen($code) - 2);
+        }
+        if(substr($code, 0, 1) == "'" && substr($code, strlen($code) -1, 1) == "'") {
+            return substr($code, 1, strlen($code) - 2);
+        }              
+        return "\".".$code."\".";
     }
 
     private function parseControll(){
@@ -2911,7 +2930,7 @@ class Http {
 
 	private function formatQuery(string $url) {
 		$urlParts = parse_url($url);
-		parse_str($urlParts['query'], $params);
+		parse_str(isset($urlParts['query'])? $urlParts['query']: "", $params);
 	
 		$_params = [];
 		foreach ($params as $key => $value) {
@@ -2941,7 +2960,9 @@ class Http {
 
 	public function postJson(string $url, string $json = null): self {
 		$this->headers["Content-Type"] = "application/json";
-		$this->sendRequest($url, $json, strlen($json), "POST");
+        $this->headers["Accept"] = "application/json";
+        $length = $json == null? 0: strlen($json);
+		$this->sendRequest($url, $json, $length, "POST");
         return $this;
 	}
 
@@ -2978,6 +2999,7 @@ class Http {
 
 	public function getJson(string $url): self {
 		$this->headers["Content-Type"] = "application/json";
+        $this->headers["Accept"] = "application/json";
 		$this->sendRequest($url, null, 0, "GET");
         return $this;
 	}

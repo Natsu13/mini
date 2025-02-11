@@ -1,3 +1,5 @@
+{include "header", ["title" => "Home"]}
+
 <h1>Hello {$model["user"]->login}</h1>
 Permission: {$model["user"]->permission()->print()}<br/>
 Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
