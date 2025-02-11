@@ -794,6 +794,12 @@ class Router {
 
             return true;
         }
+        if($this->controllerData->getType() == ControllerActionType::Json) {           
+            ob_clean(); 
+            header('Content-Type: application/json');
+            echo $this->controllerData->getJson();
+            exit();
+        }
 
         return false;
     }
@@ -3181,11 +3187,13 @@ class Response {
 enum ControllerActionType {
     case None;
     case View;
+    case Json;
 }
 
 class ControllerAction {
     private ControllerActionType $type = ControllerActionType::None;
     private array $params = [];
+    private mixed $object = null;
 
     public function getType(): ControllerActionType {
         return $this->type;
@@ -3214,6 +3222,10 @@ class ControllerAction {
         return $this->params["model"];
     }
 
+    public function getJson(): string {
+        return json_encode($this->object);
+    }
+
     public static function makeViewModel($class, $view, $model) {
         $viewModel = new ControllerAction();
         $viewModel->params = [
@@ -3224,10 +3236,17 @@ class ControllerAction {
         $viewModel->type = ControllerActionType::View;
         return $viewModel;
     }
+
+    public static function makeJsonModel(mixed $object) {
+        $viewModel = new ControllerAction();
+        $viewModel->object = $object;
+        $viewModel->type = ControllerActionType::Json;
+        return $viewModel;
+    }
 }
 
 class Controller {
-    protected function view($name, $model = null) {
+    protected function view($name, $model = null): ControllerAction {
         $className = get_class($this);
         $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3);
         $callerFunction = isset($backtrace[1]['function']) ? $backtrace[1]['function'] : null;
@@ -3238,6 +3257,10 @@ class Controller {
         }
 
         return ControllerAction::makeViewModel($className, $name, $model);
+    }
+
+    protected function json(mixed $object): ControllerAction {
+        return ControllerAction::makeJsonModel($object);
     }
 }
 

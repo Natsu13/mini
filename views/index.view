@@ -48,6 +48,8 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
 <hr/>
 {^$model["api"]}
 <hr/>
+{^$model["api2"]}
+<hr/>
 <textarea style="width: 100%; height: 200px;">{$model["sql"]}</textarea>
 
 <style>

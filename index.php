@@ -26,6 +26,7 @@ $router->add("logout", function($args) use($userService, $router) {
     $userService->logout();
     $router->redirect("/");
 });
+
 $router->add("apitest", function() use($response, $request) {
     $response->enableCors();
     if($request->is("get")) {
@@ -35,6 +36,8 @@ $router->add("apitest", function() use($response, $request) {
     }
     exit();
 });
+$router->add("apitest2", [Controllers\Article::class, "apiTest"]);
+
 $router->add("article/<id>", [Controllers\Article::class]);
 $router->add("article/<action>/<id>", "view=article&action=<action>&id=<id>");
 
@@ -74,6 +77,7 @@ echo "<html>";
                     "permission" => $user->permission(),
                     "query" => $user1/*$builder->fetchAll()*/,
                     "api" => $http->postJson(Router::url()."/apitest/")->getResponse(),
+                    "api2" => (new Http())->postJson(Router::url()."/apitest2/")->getResponse(),
                     "articlesPaginator" => $paginator,
                     "articles" => $articles,
                     "sql" => \Model::generateCreateTableQuery(User::class)

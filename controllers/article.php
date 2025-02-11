@@ -12,4 +12,8 @@ class Article extends \Controller {
         $article = \Models\Article::findById($id);
         return $this->view("index", ["id" => $id, "article" => $article]);
     }
+
+    public function apiTest() {
+        return $this->json(["hello" => "article"]);
+    }
 }
