@@ -3223,6 +3223,7 @@ class ControllerAction {
     }
 
     public function getJson(): string {
+        if($this->type != ControllerActionType::Json) throw new Exception("getJson can be called only for Json type");
         return json_encode($this->object);
     }
 
