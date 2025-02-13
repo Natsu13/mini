@@ -8,6 +8,9 @@ class Article extends \Controller {
         $this->userService = $userService;        
     }
 
+    /**
+     * @method GET
+     */
     public function index(int $id) {
         $article = \Models\Article::findById($id);
         return $this->view("index", ["id" => $id, "article" => $article]);

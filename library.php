@@ -17,6 +17,148 @@ spl_autoload_register(function ($class) {
 
 define("ROOT", str_replace("\\", "/", getcwd()));
 
+class DocParser {
+    /**
+     * The parse method processes the doc string and calls the resolver callback for each annotation found.
+     *
+     * @param string   $docString Documentation block text.
+     * @param callable $resolver  A callback that receives a method name and an array of arguments.
+     */
+    public static function parse(string $docString, callable $resolver): void {
+        $docString = trim($docString);
+        $lines = preg_split('/\R/', $docString);
+        
+        foreach ($lines as $line) {
+            $line = trim($line, " *\t\n\r\0\x0B");
+            
+            if (strpos($line, '@') === 0) {
+                // Regex captures the method name and any arguments
+                // Possible formats:
+                //   @method("arg1", "arg2")   -> contains arguments in parentheses (group 2)
+                //   @primaryKey               -> without arguments
+                //   @get index                -> argument without parentheses (group 3)
+                if (preg_match('/^@(\w+)(?:\(([^)]*)\))?(?:\s+(.+))?$/', $line, $matches)) {
+                    $methodName = strtolower($matches[1]);
+                    $argString = "";
+                    
+                    if (isset($matches[2]) && $matches[2] !== "") {
+                        $argString = $matches[2];
+                    } elseif (isset($matches[3]) && $matches[3] !== "") {
+                        $argString = $matches[3];
+                    }
+                    
+                    $arguments = [];
+                    if (!empty($argString)) {
+                        $arguments = str_getcsv($argString, ',', '"');
+                        $arguments = array_map('trim', $arguments);
+                    }
+                    
+                    call_user_func($resolver, $methodName, $arguments);
+                }
+            }
+        }
+    }
+
+    /**
+     * Resolves a given string value to its corresponding enum case.
+     *
+     * @param string $enumClass The fully qualified enum class name (e.g. Method::class).
+     * @param string $value     The value to convert into an enum case.
+     *
+     * @return object The matching enum case.
+     *
+     * @throws Exception If the enum class does not exist or the value does not match any case.
+     */
+    public static function resolveEnum(string $enumClass, string $value): object {
+        if (!enum_exists($enumClass)) {
+            throw new Exception("Enum class $enumClass does not exist.");
+        }
+        
+        // Loop through the enum cases and perform a case-insensitive match
+        foreach ($enumClass::cases() as $case) {
+            if (strtoupper($case->name) === strtoupper($value)) {
+                return $case;
+            }
+        }
+        
+        throw new Exception("Value '$value' not found in enum $enumClass.");
+    }
+
+    /**
+     * Resolves a function from a string definition.
+     *
+     * The definition must be in the format "Class::method" or "::method".
+     * If the class part is omitted (i.e. "::method"), an instance must be provided.
+     *
+     * If an instance is not provided, the class will be created using
+     * Container::getInstance()->create($class).
+     *
+     * The method is returned as a ReflectionMethod.
+     *
+     * @param string            $definition The function definition (e.g. "::Save" or "Admin::EditPost").
+     * @param object|null       $instance   Optional instance of the class. If omitted, the instance will be created.
+     * @param string            $namespace  The namespace to prepend to the class name.
+     * @param string            $inheritClass The class that the class must inherit from.
+     *
+     * @return ReflectionMethod The resolved method as a ReflectionMethod.
+     *
+     * @throws Exception        If the definition is invalid, or the class/method cannot be resolved.
+     */
+    public static function resolveFunction(string $definition, ?object $instance = null, string $namespace = "Controllers", string $inheritClass = "Controller"): ReflectionMethod {
+        // Split the definition string into class and method parts using "::" as delimiter.
+        $parts = explode("::", $definition);
+        if (count($parts) !== 2) {
+            throw new Exception("Definition must be in the format 'Class::method' or '::method'.");
+        }
+        
+        // Trim and extract parts.
+        $classPart = trim($parts[0]);
+        $method = trim($parts[1]);
+        
+        // If the class part is omitted, we expect an instance to be passed.
+        if ($classPart === '') {
+            if ($instance === null) {
+                throw new Exception("No class provided in definition and no instance was passed for method '$method'.");
+            }
+            //$class = get_class($instance);
+        } else {
+            $originalClass = $classPart;
+            $class = $classPart;
+            
+            $namespace = $namespace."\\";
+            // If the class name does not start with "Controllers\", prepend it.
+            if (strpos($class, $namespace) !== 0) {
+                $class = $namespace . $class;
+            }
+            
+            // If the class does not exist, try appending "Controller"
+            if (!class_exists($class) && class_exists($class . $inheritClass)) {
+                $class .= $inheritClass;
+            }
+            
+            if (!class_exists($class)) {
+                throw new Exception("Class '$originalClass' does not exist.");
+            }
+            
+            if (!is_subclass_of($class, $inheritClass)) {
+                throw new Exception("Class '$originalClass' does not implement '$inheritClass'.");
+            }
+            
+            $instance = Container::getInstance()->create($class);
+        }
+        
+        // Check if the method exists on the instance.
+        if (!method_exists($instance, $method)) {
+            throw new Exception("Method '$method' not found in class '" . get_class($instance) . "'.");
+        }
+        
+        // Get the ReflectionMethod of the method.
+        $reflectionMethod = new ReflectionMethod($instance, $method);
+        
+        return $reflectionMethod;
+    }
+}
+
 class Utilities {
     public static function vardump($object, $level = 0) {
         echo "<div style='margin-left: " . ($level * 10) . "px;' class='var-dump level-" . $level . "'>";
@@ -625,6 +767,14 @@ class Container {
     }
 }
 
+enum Method {
+    case UNKNOWN;
+    case GET;
+    case POST;
+    case PUT;
+    case DELETE;    
+}
+
 class Router {
     private array $routes = [];
     private ?string $matchedUrl = null;
@@ -632,10 +782,12 @@ class Router {
     private string $baseUrl;
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
+    private Request $request;
 
-    public function __construct() {
+    public function __construct(Layout $layout, Request $request) {
         $this->baseUrl = $this->generateBaseUrl();
-        $this->layout = Container::getInstance()->get(Layout::class);
+        $this->layout = $layout;
+        $this->request = $request;
     }
 
     public static function url(bool $full = false, bool $_request = false): string {
@@ -751,29 +903,69 @@ class Router {
         $instance = Container::getInstance()->create($class);
 
         if(!method_exists($instance, $method)) 
-            throw new Exception("Method $method not found in class $class");        
+            throw new Exception("Method $method not found in class $class");
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
-        $methodParams = $reflectionMethod->getParameters();
-        $resolvedParams = [];
-        foreach ($methodParams as $param) {
-            $name = $param->getName();
-            if (isset($_GET[$name])) {
-                $resolvedParams[] = $_GET[$name];
-            } elseif (isset($_POST[$name])) {
-                $resolvedParams[] = $_POST[$name];
-            } elseif (isset($_SERVER[$name])) {
-                $resolvedParams[] = $_SERVER[$name];
-            } elseif (isset($_FILES[$name])) {
-                $resolvedParams[] = $_FILES[$name];
-            } elseif ($param->isDefaultValueAvailable()) {
-                $resolvedParams[] = $param->getDefaultValue();
-            } else {
-                throw new Exception("Missing value for parameter '$name' of method $method in class $class");
+        $methodName = $this->request->method()->name;
+
+        $saveIndex = 0;
+        $methodsToRedirect = [];        
+
+        $methodsToRedirect[] = "$reflectionMethod->class::$reflectionMethod->name";
+        while($reflectionMethod != null) {
+            $requiredMethod = Method::UNKNOWN;
+            $replaceMethodOn = [];
+
+            $docComment = $reflectionMethod->getDocComment();
+            DocParser::parse($docComment, function($name, $args) use (&$requiredMethod, &$replaceMethodOn, $instance) {            
+                if($name == "method") {                
+                    $requiredMethod = DocParser::resolveEnum(Method::class, $args[0]);
+                }
+                else if($name == "get") {
+                    $replaceMethodOn[Method::GET->name] = DocParser::resolveFunction($args[0], $instance);
+                }
+                else if($name == "post") {
+                    $replaceMethodOn[Method::POST->name] = DocParser::resolveFunction($args[0], $instance);
+                }
+            });
+
+            if($requiredMethod != Method::UNKNOWN && !$this->request->is($requiredMethod)) {
+                if(isset($replaceMethodOn[$methodName])) {                                    
+                    $reflectionMethod = $replaceMethodOn[$methodName];
+                     
+                    $fullName = "$reflectionMethod->class::$reflectionMethod->name";
+                    if(in_array($fullName, $methodsToRedirect)) {
+                        throw new Exception("Circual redirection detected, ".implode(" -> ", $methodsToRedirect)." -> $fullName");
+                    }                    
+                    $methodsToRedirect[] = $fullName;
+                    continue;
+                } else {
+                    throw new ControllerMethodNotAllowedException($requiredMethod);
+                }            
             }
+            
+            $methodParams = $reflectionMethod->getParameters();
+            $resolvedParams = [];
+            foreach ($methodParams as $param) {
+                $name = $param->getName();
+                if (isset($_GET[$name])) {
+                    $resolvedParams[] = $_GET[$name];
+                } elseif (isset($_POST[$name])) {
+                    $resolvedParams[] = $_POST[$name];
+                } elseif (isset($_SERVER[$name])) {
+                    $resolvedParams[] = $_SERVER[$name];
+                } elseif (isset($_FILES[$name])) {
+                    $resolvedParams[] = $_FILES[$name];
+                } elseif ($param->isDefaultValueAvailable()) {
+                    $resolvedParams[] = $param->getDefaultValue();
+                } else {
+                    throw new Exception("Missing value for parameter '$name' of method $method in class $class");
+                }
+            }
+                    
+            $this->controllerData = $reflectionMethod->invokeArgs($instance, $resolvedParams);
+            break;
         }
-                
-        $this->controllerData = $reflectionMethod->invokeArgs($instance, $resolvedParams);
     }
 
     public function tryProcessController(): bool {
@@ -3124,8 +3316,33 @@ class Request {
         return isset($this->headers[$key]) ? $this->headers[$key] : null;
     }
 
-    public function is($type): bool {
-        return strtolower($_SERVER['REQUEST_METHOD']) === trim(strtolower($type));
+    public function is(string | Method $type): bool {
+        if(is_string($type))
+            return strtolower($_SERVER['REQUEST_METHOD']) === trim(strtolower($type));
+        
+        if($type == Method::GET)
+            return strtolower($_SERVER['REQUEST_METHOD']) === "get";
+        if($type == Method::POST)
+            return strtolower($_SERVER['REQUEST_METHOD']) === "post";
+        if($type == Method::PUT)
+            return strtolower($_SERVER['REQUEST_METHOD']) === "put";
+        if($type == Method::DELETE)
+            return strtolower($_SERVER['REQUEST_METHOD']) === "delete";
+
+        throw new Exception("Unknown method type = {$type->name}");
+    }
+
+    public function method(): Method {
+        if($this->is(Method::GET)) return Method::GET;
+        if($this->is(Method::POST)) return Method::POST;
+        if($this->is(Method::PUT)) return Method::PUT;
+        if($this->is(Method::DELETE)) return Method::DELETE;
+
+        throw new Exception("Unknown method type");
+    }
+
+    public function isAjax(): bool {
+        return !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
     }
 
     public function isSecure(): bool {
@@ -3188,6 +3405,19 @@ enum ControllerActionType {
     case None;
     case View;
     case Json;
+}
+
+class ControllerMethodNotAllowedException extends Exception {
+    private Method $method;
+
+    public function __construct(Method $method) {
+        parent::__construct("Method not allowed", Response::HTTP_BAD_REQUEST);
+        $this->method = $method;
+    }
+
+    public function getMethod(): Method {
+        return $this->method;
+    }
 }
 
 class ControllerAction {
