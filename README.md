@@ -1,3 +1,5 @@
+![PHP 8.3](https://img.shields.io/badge/PHP-8.3-blue.svg?logo=php)
+
 Very small php framework
 
 Simply routing:
