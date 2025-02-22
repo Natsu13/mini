@@ -870,7 +870,7 @@ class Router {
                     return;
                 } else if (is_array($matchedRoute['handler'])) {
                     $this->processVariables($matchedRoute['variables']);
-                    $this->callController($matchedRoute['handler']);
+                    $this->callController($matchedRoute['handler'], $matchedRoute['variables']);
                 } else if ($matchedRoute['redirect']) {
                     $this->redirect($matchedRoute['handler']);
                 } else {
@@ -887,10 +887,10 @@ class Router {
         }
     }
 
-    private function callController($definition){
+    private function callController($definition, $variables){
         if(!is_array($definition)) throw new Exception("Definition must be array [class, method]");        
         $class = $originalClass = $definition[0];
-        $method = count($definition) > 1? $definition[1]: "index";
+        $methodNameOrCallback = count($definition) > 1? $definition[1]: "index";
         
         if(substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\". $class;          
         if(!class_exists($class) && class_exists($class."Controller")) $class .= "Controller";
@@ -901,6 +901,14 @@ class Router {
             throw new Exception("Class $originalClass not implement class \"Controller\"");
 
         $instance = Container::getInstance()->create($class);
+
+        if(is_callable($methodNameOrCallback)){
+            $method = $methodNameOrCallback($variables);            
+        }else {
+            $method = $methodNameOrCallback;
+        }
+
+        if($method == null || $method == "") $method = "index";
 
         if(!method_exists($instance, $method)) 
             throw new Exception("Method $method not found in class $class");
@@ -975,11 +983,18 @@ class Router {
         if($this->controllerData->getType() == ControllerActionType::View) {
             $class = $this->controllerData->getClass();
             $view = $this->controllerData->getView();
-            $model = $this->controllerData->getModel();
+            $model = $this->controllerData->getModel();      
+            $shouldClear = $this->controllerData->shouldClearContent();      
             
             $viewFile = !file_exists(ROOT."/views/{$class}/{$view}.view")? ROOT."/views/{$view}.view": ROOT."/views/{$class}/{$view}.view";
             if(file_exists($viewFile)) {
+                if($shouldClear) {
+                    ob_clean(); 
+                }
+                
                 $this->layout->render($viewFile, $model);
+
+                if($shouldClear) exit();
             } else {
                 throw new Exception("View file not found: /views/{$class}/{$view}.view, /views/{$view}.view");
             }
@@ -1171,10 +1186,15 @@ class Page {
 		
 		echo '<link href="' . Router::url() . '/favicon.ico?cache='.CACHE.'" rel="icon">'.PHP_EOL;		
 
+        $rootUrl = Router::url();
 		if($this->scripts != null) {
 			foreach($this->scripts as $script) {
-				if($script["inhead"])
-					echo '<script type="text/javascript" src="' . Url::addParam($script["url"], "cache", CACHE) . '"></script>'.PHP_EOL;
+				if($script["inhead"]) {
+                    if(substr($script["url"], 0, strlen($rootUrl)) == $rootUrl)
+					    echo '<script type="text/javascript" src="' . Url::addParam($script["url"], "cache", CACHE) . '"></script>'.PHP_EOL;
+                    else
+                        echo '<script type="text/javascript" src="' . $script["url"] . '"></script>'.PHP_EOL;
+                }
 			}
 		}
 		if($this->styles != null) {
@@ -2148,7 +2168,9 @@ class Database {
     public function connect($host, $database, $username, $password) {
         $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,        ]);
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+        ]);
         $this->connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     }
 
@@ -2448,8 +2470,9 @@ abstract class Model {
         $result = null;
 
         $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
-        if ($relation['type'] === 'hasMany') {            
-            $className = "Models\\". $relation['class'];                        
+        if ($relation['type'] === 'hasMany') {                        
+            $className = "Models\\". $relation['class'];       
+            
             $result = (new $className)
                 ->where([$foreignKey => $this->{static::$primaryKey}]);
                 //->fetchAll();
@@ -2773,7 +2796,7 @@ class QueryBuilder {
         foreach ($buildData["binds"] as $name => $value) {
             $stmt->bindValue($name, $value, Database::getPdoParamType($value));
         }        
-
+        
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -3156,7 +3179,10 @@ class Http {
         return $this;
 	}
 
-	public function postJson(string $url, string $json = null): self {
+	public function postJson(string $url, string | object | array $json = null): self {
+        if(!is_string($json))
+            $json = json_encode($json);
+
 		$this->headers["Content-Type"] = "application/json";
         $this->headers["Accept"] = "application/json";
         $length = $json == null? 0: strlen($json);
@@ -3442,6 +3468,10 @@ class ControllerAction {
         return strtolower($class);
     }
 
+    public function shouldClearContent(): bool {
+        return (($this->type == ControllerActionType::View && $this->params["clear"]) || $this->type == ControllerActionType::Json);
+    }
+
     public function getView(): string {
         if($this->type != ControllerActionType::View) throw new Exception("getView can be called only for View type");
         return $this->params["view"];
@@ -3457,12 +3487,13 @@ class ControllerAction {
         return json_encode($this->object);
     }
 
-    public static function makeViewModel($class, $view, $model) {
+    public static function makeViewModel($class, $view, $model, $clearContent) {
         $viewModel = new ControllerAction();
         $viewModel->params = [
             "class" => $class,
             "view" => $view,
-            "model" => $model
+            "model" => $model,
+            "clear" => $clearContent
         ];
         $viewModel->type = ControllerActionType::View;
         return $viewModel;
@@ -3477,17 +3508,32 @@ class ControllerAction {
 }
 
 class Controller {
-    protected function view($name, $model = null): ControllerAction {
-        $className = get_class($this);
+    private function getNameOfCaller($back = 2) {
         $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3);
-        $callerFunction = isset($backtrace[1]['function']) ? $backtrace[1]['function'] : null;
+        return isset($backtrace[$back]['function']) ? $backtrace[$back]['function'] : null;
+    }
+
+    protected function view($name, $model = null, $clearContent = false): ControllerAction {
+        $className = get_class($this);
+        $callerFunction = $this->getNameOfCaller();
 
         if (($name === null || !is_string($name)) && $model === null && $callerFunction !== null) {
             $model = $name;
             $name = $callerFunction;
         }
 
-        return ControllerAction::makeViewModel($className, $name, $model);
+        return ControllerAction::makeViewModel($className, $name, $model, $clearContent);
+    }
+
+    protected function component($name, $model = null) {
+        $callerFunction = $this->getNameOfCaller();
+
+        if (($name === null || !is_string($name)) && $model === null && $callerFunction !== null) {
+            $model = $name;
+            $name = $callerFunction;
+        }
+
+        return $this->view($name, $model, true);
     }
 
     protected function json(mixed $object): ControllerAction {
