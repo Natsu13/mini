@@ -396,6 +396,7 @@ class Paginator {
         $this->options = array_merge([
             'pageParam' => 'page',
             'showTotal' => true,
+            'totalOutside' => true,
             'totalPosition' => 'right',
             'prevText' => '&laquo;',
             'nextText' => '&raquo;',
@@ -550,11 +551,19 @@ class Paginator {
 
     public function render(): string {
         $html = [];
+
+        if($this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
+            $html[] = sprintf(
+                '<span class="total-counter">Celkem: <span>%d</span></span>',
+                $this->totalItems
+            );
+        }
+
         $html[] = sprintf('<nav><ul class="%s">', $this->options['containerClass']);
 
-        if ($this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
+        if (!$this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
             $html[] = sprintf(
-                '<li class="%s">Celkem: <span>%d</span></li>',
+                '<li class="%s">Total: <span>%d</span></li>',
                 $this->options['textClass'],
                 $this->totalItems
             );
@@ -567,7 +576,7 @@ class Paginator {
             );
         }
 
-        if ($this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
+        if (!$this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
             $html[] = sprintf(
                 '<li class="%s">Celkem: <span>%d</span></li>',
                 $this->options['textClass'],
@@ -576,6 +585,13 @@ class Paginator {
         }
 
         $html[] = '</ul></nav>';
+
+        if($this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
+            $html[] = sprintf(
+                '<span class="total-counter">Total: <span>%d</span></span>',
+                $this->totalItems
+            );
+        }
 
         return implode('', $html);
     }
@@ -2349,6 +2365,11 @@ abstract class Model {
         $obj = (new static);
         $builder = new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
         return $builder->where($condition, $params);
+    }
+
+    public static function toQuery(): QueryBuilder {
+        $obj = (new static);
+        return new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
     }
 
     /**
