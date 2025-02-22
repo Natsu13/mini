@@ -405,7 +405,8 @@ class Paginator {
             'linkClass' => 'page-link',
             'textClass' => 'page-text',
             'activeClass' => 'active',
-            'displayCount' => 7
+            'displayCount' => 7,
+            'jsCallback' => null
         ], $options);
 
         $this->urlPattern = $this->processUrlPattern($urlPattern);
@@ -508,6 +509,11 @@ class Paginator {
         $linkClass = $this->options['linkClass'];
         $textClass = $this->options['textClass'];
 
+        $jsCallback = null;
+        if($this->options["jsCallback"] != null) {
+            $jsCallback = " onclick=\"return ".$this->options["jsCallback"]."(this, %d);\"";
+        }
+
         if($type == PaginatorType::Page) {
             $page = intval($value);            
             $url = str_replace('(:page)', (string)$page, $this->urlPattern);
@@ -516,10 +522,11 @@ class Paginator {
                 $itemClass .= ' ' . $this->options['activeClass'];
 
             return sprintf(
-                '<li class="%s"><a href="%s" class="%s">%s</a></li>',
+                '<li class="%s"><a href="%s" class="%s"%s>%s</a></li>',
                 $itemClass,
                 $url,
                 $linkClass,
+                sprintf($jsCallback, $page),
                 $page
             );
         } else if($type == PaginatorType::Dots) {
@@ -538,10 +545,11 @@ class Paginator {
             $url = str_replace('(:page)', (string)$page, $this->urlPattern);
 
             return sprintf(
-                '<li class="%s"><a href="%s" class="%s">%s</a></li>',
+                '<li class="%s"><a href="%s" class="%s"%s>%s</a></li>',
                 $itemClass,
                 $url,
                 $linkClass,
+                sprintf($jsCallback, $page),
                 $value
             );
         }
@@ -554,7 +562,7 @@ class Paginator {
 
         if($this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
             $html[] = sprintf(
-                '<span class="total-counter">Celkem: <span>%d</span></span>',
+                '<span class="total-counter">Total: <span>%d</span></span>',
                 $this->totalItems
             );
         }
@@ -578,7 +586,7 @@ class Paginator {
 
         if (!$this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] === 'right') {
             $html[] = sprintf(
-                '<li class="%s">Celkem: <span>%d</span></li>',
+                '<li class="%s">Total: <span>%d</span></li>',
                 $this->options['textClass'],
                 $this->totalItems
             );
