@@ -749,15 +749,15 @@ class Container {
         $containerParamsCount = 0;
         for ($i = count($params) - 1; $i >= 0; $i--) {
             $param = $params[$i];
-            $type = $param->getType();
+            $type = $param->getType();            
             if ($type && !$type->isBuiltin() && isset($this->services[$type->getName()])) {
                 $containerParamsCount++;
             } else {
                 break;
             }
         }
-        
-        $manualArgsCount = count($args) - $containerParamsCount;
+                
+        $manualArgsCount = $containerParamsCount - count($args);
         if ($manualArgsCount < 0) {
             throw new Exception("Too few arguments were passed.");
         }
@@ -768,9 +768,9 @@ class Container {
         $containerIndex = 0;
     
         foreach ($params as $param) {
-            $type = $param->getType();
-            
+            $type = $param->getType();            
             if ($type && !$type->isBuiltin() && isset($this->services[$type->getName()])) {
+                
                 if (isset($containerOverrides[$containerIndex])) {
                     $resolvedArgs[] = $containerOverrides[$containerIndex++];
                 } else {
@@ -786,7 +786,7 @@ class Container {
                 }
             }
         }
-    
+
         return $reflection->newInstanceArgs($resolvedArgs);
     }
 }
@@ -2258,6 +2258,10 @@ abstract class Model {
                 $this->$property = $value;
             }
         }
+    }
+
+    public function isNew(): bool {
+        return $this->state == ModelState::New;
     }
 
     private function loadDefaults() {
