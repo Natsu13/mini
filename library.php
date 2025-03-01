@@ -2230,9 +2230,11 @@ abstract class Model {
     protected static string $primaryKey;
     protected static bool $primaryKeyAutoIncrement = true;
 
+    protected string $tableNameInstance;
+
     protected $mappings = [];
     protected $mappingsBack = [];
-    protected $columnsDefinition = [];
+    protected $columnsDefinition = [];    
 
     protected Database $database;
     protected $attributes = [];
@@ -2242,6 +2244,8 @@ abstract class Model {
         $this->database = Container::getInstance()->get(Database::class);
         $this->loadDefaults();
         $this->populate($data);
+
+        $this->tableNameInstance = static::$table;
     }
 
     private function populate(array $data) {
@@ -2387,7 +2391,7 @@ abstract class Model {
     /**
      * Delete the row in table by id
      */
-    public function delete(): bool {
+    public function delete(): string {
         $db = $this->database->getConnection();
         $primaryKey = static::$primaryKey;
 
@@ -2395,7 +2399,8 @@ abstract class Model {
             throw new Exception("Primary key is not set for model ".get_class($this).", or the model was not saved so we can't delete the model");
         }
 
-        $stmt = $db->prepare("DELETE FROM " . static::$table . " WHERE $primaryKey = ?");
+        //TODO: delete all childs
+        $stmt = $db->prepare("DELETE FROM " . $this->tableNameInstance . " WHERE $primaryKey = ?");
         $stmt->execute([$this->$primaryKey]);
         return $stmt->rowCount() > 0;
     }
@@ -2432,7 +2437,7 @@ abstract class Model {
         if ($this->$primaryKey === null || $this->state === ModelState::New) {
             // INSERT
             $placeholders = array_fill(0, count($columns), '?');
-            $stmt = $db->prepare("INSERT INTO " . static::$table . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
+            $stmt = $db->prepare("INSERT INTO " . $this->tableNameInstance . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
 
             if ($stmt->execute($values)) {
                 if (static::$primaryKeyAutoIncrement) {
@@ -2448,7 +2453,7 @@ abstract class Model {
             foreach ($columns as $column) {
                 $setColumns[] = "$column = ?";
             }
-            $stmt = $db->prepare("UPDATE " . static::$table . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
+            $stmt = $db->prepare("UPDATE " . $this->tableNameInstance . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
             $values[] = $this->$primaryKey;
 
             $this->state = ModelState::Changed;
