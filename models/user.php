@@ -24,6 +24,9 @@ class User extends \Model {
     /** @length(100) */
     public string $email;
 
+    /** @length(10) */
+    public string $gender;
+
     /** @column("permission_id") */
     public int $permissionId;
 

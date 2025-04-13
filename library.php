@@ -807,11 +807,13 @@ class Router {
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
     private Request $request;
+    private AuthentificatorProvider $authenticationProvider;
 
-    public function __construct(Layout $layout, Request $request) {
+    public function __construct(Layout $layout, Request $request, AuthentificatorProvider $authenticationProvider) {
         $this->baseUrl = $this->generateBaseUrl();
         $this->layout = $layout;
         $this->request = $request;
+        $this->authenticationProvider = $authenticationProvider;
     }
 
     public static function url(bool $full = false, bool $_request = false): string {
@@ -875,6 +877,7 @@ class Router {
 
     public function redirect(string $path): void {
         $url = self::url() . '/' . ltrim($path, '/');
+        ob_clean();
         header("Location: $url");
         exit();
     }
@@ -889,7 +892,7 @@ class Router {
             if ($this->matchRoute($url, $route, $key)) {
                 $matchedRoute = $this->routes[$key];                
                 
-                if (is_callable($matchedRoute['handler'])) {
+                if (is_callable($matchedRoute['handler'])) {                    
                     call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
                     return;
                 } else if (is_array($matchedRoute['handler'])) {
@@ -997,10 +1000,48 @@ class Router {
             if($resultModel == null) {
                 throw new ControllerReturnedNullException($reflectionMethod->class, $reflectionMethod->name);
             }
-            
+
+            if($this->needAuthentification($reflectionMethod)){                
+                $this->redirectToLoginIfNeeded();
+            }
+    
             $this->controllerData = $resultModel;
             break;
         }
+    }
+
+    public function redirectToLoginIfNeeded(){
+        $authentication = $this->authenticationProvider->get();                
+        if($authentication->isAuthenticated()) return;        
+
+        $authUrl = $authentication->getAuthentificationUrl();
+        if(!empty($authUrl)) {
+            $this->redirect($authUrl);
+        } else {
+            throw new Exception("Authentication required, but no URL provided.");
+        }
+    }
+
+    public function needAuthentification(ReflectionMethod $reflectionMethod): bool {
+        $allowAnonymous = false;
+
+        $docComment = (new ReflectionClass($reflectionMethod->class))->getDocComment();
+        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {        
+            if($name == "allowanonymous") {                
+                $allowAnonymous = true;
+            }
+        });
+        if($allowAnonymous) return false;
+
+        $docComment = $reflectionMethod->getDocComment();
+        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {            
+            if($name == "allowanonymous") {                
+                $allowAnonymous = true;
+            }
+        });
+        if($allowAnonymous) return false;
+
+        return true;
     }
 
     public function tryProcessController(): bool {
@@ -1033,6 +1074,9 @@ class Router {
             header('Content-Type: application/json');
             echo $this->controllerData->getJson();
             exit();
+        }
+        else if($this->controllerData->getType() == ControllerActionType::Redirect) {
+            $this->redirect($this->controllerData->getRedirectUrl());
         }
         else if($this->controllerData->getType() == ControllerActionType::None) {
             //continue return type
@@ -2093,7 +2137,12 @@ class Cookies {
 			}else{
 				unset($_COOKIE[$name]);
 			}
-			$cookie = setcookie($name, $value, strtotime($time), "/");					
+
+            if($time === 0) {
+                setcookie($name, $value, 0, "/");
+            }else {
+                setcookie($name, $value, (is_int($time)? time() + $time: strtotime($time)), "/");
+            }
 
 			if(substr($time, 0, 1) != "-"){				
 				$hash = sha1($name.$value);
@@ -3050,8 +3099,10 @@ if(defined("USE_USERS")) {
 
     class UserService {
         private Router $router;
+        private AuthentificatorProvider $authentificatorProvider;
 
-        public function __construct(Router $router) {
+        public function __construct(Router $router, AuthentificatorProvider $authentificatorProvider) {
+            $this->authentificatorProvider = $authentificatorProvider;
             $this->router = $router;
         }
 
@@ -3067,7 +3118,15 @@ if(defined("USE_USERS")) {
             return UserServiceCheck::Unknown;
         }
 
-        public function register(string $login, string $password, string $email): Models\User | UserServiceCheck {
+        /**
+         * Register new user
+         * @param string $login
+         * @param string $password
+         * @param string $email
+         * @param callable $callback optional function to modify user before save
+         * @return Models\User | UserServiceCheck
+         */
+        public function register(string $login, string $password, string $email, ?callable $callback = null): Models\User | UserServiceCheck {
             $state = $this->check($login, $email);
 
             if($state == UserServiceCheck::Ok) {
@@ -3075,6 +3134,11 @@ if(defined("USE_USERS")) {
                 $user->login = $login;
                 $user->password = sha1($password);
                 $user->email = $email;
+                
+                if($callback != null) {
+                    $callback($user);
+                }
+
                 $user->save();
 
                 return $user;
@@ -3088,11 +3152,13 @@ if(defined("USE_USERS")) {
          * @return bool
          */
         public function isAuthentificated(): bool {
-            if(Cookies::security_check("userId")) {
-                $userId = $_COOKIE["userId"];
-                $user = Models\User::findById($userId);
-                if($user != null) return true;            
-            }
+            $auth = $this->authentificatorProvider->get();
+            if(!$auth->isAuthenticated()) return false;
+
+            $userId = $auth->getValue();
+            $user = Models\User::findById($userId);
+            if($user != null) return true;   
+
             return false;
         }
 
@@ -3102,18 +3168,21 @@ if(defined("USE_USERS")) {
             if($user == null) return UserServiceLogin::WrongLogin;
             if($user->password != sha1($password)) return UserServiceLogin::WrongPassword;
 
-            Cookies::set("userId", $user->id, "+24 hours");
+            $auth = $this->authentificatorProvider->get();
+            $auth->authenticate($user->id);
 
             return UserServiceLogin::Ok;
         }
 
         public function logout() {
-            Cookies::delete("userId");
+            $auth = $this->authentificatorProvider->get();
+            $auth->deauthenticate();
         }
 
         public function current(): ?Models\User {
             if(!$this->isAuthentificated()) return null;
-            return Models\User::findById($_COOKIE["userId"]);
+            $auth = $this->authentificatorProvider->get();
+            return Models\User::findById($auth->getValue());
         }
     }
 }
@@ -3475,6 +3544,7 @@ enum ControllerActionType {
     case None;
     case View;
     case Json;
+    case Redirect;
 }
 
 class ControllerMethodNotAllowedException extends Exception {
@@ -3541,6 +3611,11 @@ class ControllerAction {
         return json_encode($this->object);
     }
 
+    public function getRedirectUrl(): string {
+        if($this->type != ControllerActionType::Redirect) throw new Exception("getRedirectUrl can be called only for Redirect type");
+        return $this->params["redirect"];
+    }
+
     public static function makeViewModel(string $class, string $view, array|null $model, bool $clearContent): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->params = [
@@ -3560,9 +3635,18 @@ class ControllerAction {
         return $viewModel;
     }
 
-    public static function makeContinueModel() {
+    public static function makeContinueModel(): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->type = ControllerActionType::None;
+        return $viewModel;
+    }
+
+    public static function makeRedirectModel(string $url): ControllerAction {
+        $viewModel = new ControllerAction();
+        $viewModel->params = [
+            "redirect" => $url
+        ];
+        $viewModel->type = ControllerActionType::Redirect;
         return $viewModel;
     }
 }
@@ -3603,6 +3687,160 @@ class Controller {
     protected function continue(): ControllerAction {
         return ControllerAction::makeContinueModel();
     }
+
+    protected function redirect(string $url): ControllerAction {
+        return ControllerAction::makeRedirectModel($url);
+    }
+}
+
+class AuthentificatorProvider {
+    private ?Authentication $authentication = null;
+
+    public function __construct() {
+        
+    }
+
+    public function set(Authentication $authentication) {
+        $this->authentication = $authentication;
+    }
+
+    public function get(): Authentication {
+        if($this->authentication == null) {
+            //This will ensure that there is always one authnetification
+            $this->authentication = (new Authentication())
+            ->setAuthenticationMethods([
+                'cookies' => new CookieAuthentication('session', '+1 day')
+            ])
+            ->setDefaultAuthenticationMethod('cookies');
+        }
+        return $this->authentication;
+    }
+}
+
+class Authentication {
+    /**
+     * @var array<string, AuthenticationMethod>
+     */
+    private array $methods = [];
+    private ?AuthenticationMethod $defaultMethod = null;
+    private ?string $authentificationUrl = null;
+    private bool $needAuthentification = false;
+
+    /**
+     * @param array<string, AuthenticationMethod> $methods
+     */
+    public function setAuthenticationMethods(array $methods): self {
+        foreach ($methods as $key => $method) {
+            if (!$method instanceof AuthenticationMethod) {
+                throw new InvalidArgumentException("Authentication method '$key' must implement AuthenticationMethod interface.");
+            }
+        }
+
+        $this->methods = $methods;
+
+        // If only one method is provided, set it as default automatically
+        if (count($methods) === 1) {
+            $this->defaultMethod = reset($methods); // gets the first value
+        }
+
+        return $this;
+    }
+
+    public function setDefaultAuthenticationMethod(string $name): self {
+        if (!isset($this->methods[$name])) {
+            throw new Exception("Unknown authentication method: $name");
+        }
+        $this->defaultMethod = $this->methods[$name];
+        return $this;
+    }
+
+    public function setAuthentificationUrl(string $url): self {
+        $this->authentificationUrl = $url;
+        return $this;
+    }
+
+    public function getAuthentificationUrl(): ?string {
+        return $this->authentificationUrl;
+    }
+
+    public function requireAuthentification(bool $require): self {
+        $this->needAuthentification = $require;
+        return $this;
+    }
+
+    public function isAuthentificationRequired(): bool {
+        return $this->needAuthentification;
+    }
+
+    private function getMethod(?string $method = null): AuthenticationMethod {
+        if ($method === null) {
+            if ($this->defaultMethod === null) {
+                throw new Exception("Default authentication method not set");
+            }
+            return $this->defaultMethod;
+        }
+
+        if (!isset($this->methods[$method])) {
+            throw new Exception("Unknown authentication method: $method");
+        }
+
+        return $this->methods[$method];
+    }
+
+    public function authenticate(string|object $value, ?string $method = null): bool {
+        return $this->getMethod($method)->authenticate($value);
+    }
+
+    public function deauthenticate(?string $method = null) {
+        return $this->getMethod($method)->deauthenticate();
+    }
+
+    public function isAuthenticated(?string $method = null): bool {
+        return $this->getMethod($method)->isAuthenticated();
+    }
+
+    public function getValue(?string $method = null): string|object|null {
+        return $this->getMethod($method)->getValue();
+    }
+}
+
+interface AuthenticationMethod {
+    public function authenticate(string|object $value): bool;
+    public function deauthenticate();
+    public function isAuthenticated(): bool;
+    public function getValue(): string|object|null;
+}
+
+class CookieAuthentication implements AuthenticationMethod {
+    private string $cookieName = "session";
+    private int $cookieExpire = 0;
+
+    public function __construct(string $cookieName, string | int $expiration = 0) {
+        $this->cookieName = $cookieName;
+        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day"): (is_int($expiration)? $expiration: strtotime($expiration)));        
+    }
+
+    public function authenticate(string | object $value): bool {
+        if($value == null) return false;
+        Cookies::set($this->cookieName, $value, $this->cookieExpire);
+        return true;
+    }
+
+    public function deauthenticate(){
+        if(isset($_COOKIE[$this->cookieName])) {
+            Cookies::delete($this->cookieName);
+        }
+    }
+
+    public function isAuthenticated(): bool {
+        if(isset($_COOKIE[$this->cookieName])) return true;
+        return false;
+    }
+
+    public function getValue(): string | object | null {
+        if($this->isAuthenticated()) return $_COOKIE[$this->cookieName];
+        return null;
+    }
 }
 
 define("CACHE", 1);
@@ -3614,6 +3852,7 @@ $container->setSingleton(Layout::class);
 $container->setSingleton(Database::class);
 $container->setSingleton(Request::class);
 $container->setSingleton(Response::class);
+$container->setSingleton(AuthentificatorProvider::class);
 
 if(defined("USE_USERS")) {
     $container->setSingleton(UserService::class);
