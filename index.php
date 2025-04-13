@@ -32,6 +32,7 @@ $database->connect("127.0.0.1", "mini", "root", "");
 
 $router->add("", "view=index");
 $router->add("login", [Controllers\Login::class]);
+$router->add("register", [Controllers\Login::class, "register"]);
 $router->add("logout", function ($args) use ($userService, $router) {
     $userService->logout();
     $router->redirect("/");

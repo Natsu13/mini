@@ -3134,6 +3134,7 @@ if(defined("USE_USERS")) {
                 $user->login = $login;
                 $user->password = sha1($password);
                 $user->email = $email;
+                $user->permissionId = 1;
                 
                 if($callback != null) {
                     $callback($user);
