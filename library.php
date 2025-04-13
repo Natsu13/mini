@@ -3818,7 +3818,7 @@ class CookieAuthentication implements AuthenticationMethod {
 
     public function __construct(string $cookieName, string | int $expiration = 0) {
         $this->cookieName = $cookieName;
-        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day"): (is_int($expiration)? $expiration: strtotime($expiration)));        
+        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day", 0): (is_int($expiration)? $expiration: strtotime($expiration, 0)));        
     }
 
     public function authenticate(string | object $value): bool {
