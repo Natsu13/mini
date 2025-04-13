@@ -6,12 +6,12 @@ if(!defined("DEBUG")) {
 }
 
 spl_autoload_register(function ($class) {    
-    $file = str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php';
+    $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php');
 
     if (file_exists($file)) {
         require_once $file;
     }else {
-        throw new Exception("File not found: ".$file);
+        throw new Exception("SplAutoload: File not found: ".$file);
     }
 });
 
@@ -939,8 +939,6 @@ class Router {
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
         $methodName = $this->request->method()->name;
-
-        $saveIndex = 0;
         $methodsToRedirect = [];        
 
         $methodsToRedirect[] = "$reflectionMethod->class::$reflectionMethod->name";
@@ -995,7 +993,12 @@ class Router {
                 }
             }
                     
-            $this->controllerData = $reflectionMethod->invokeArgs($instance, $resolvedParams);
+            $resultModel = $reflectionMethod->invokeArgs($instance, $resolvedParams);
+            if($resultModel == null) {
+                throw new ControllerReturnedNullException($reflectionMethod->class, $reflectionMethod->name);
+            }
+            
+            $this->controllerData = $resultModel;
             break;
         }
     }
@@ -1008,7 +1011,7 @@ class Router {
             $class = $this->controllerData->getClass();
             $view = $this->controllerData->getView();
             $model = $this->controllerData->getModel();      
-            $shouldClear = $this->controllerData->shouldClearContent();      
+            $shouldClear = $this->controllerData->shouldClearContent();                  
             
             $viewFile = !file_exists(ROOT."/views/{$class}/{$view}.view")? ROOT."/views/{$view}.view": ROOT."/views/{$class}/{$view}.view";
             if(file_exists($viewFile)) {
@@ -1025,11 +1028,14 @@ class Router {
 
             return true;
         }
-        if($this->controllerData->getType() == ControllerActionType::Json) {           
+        else if($this->controllerData->getType() == ControllerActionType::Json) {           
             ob_clean(); 
             header('Content-Type: application/json');
             echo $this->controllerData->getJson();
             exit();
+        }
+        else if($this->controllerData->getType() == ControllerActionType::None) {
+            //continue return type
         }
 
         return false;
@@ -3484,6 +3490,15 @@ class ControllerMethodNotAllowedException extends Exception {
     }
 }
 
+class ControllerReturnedNullException extends Exception {
+    public function __construct(string $class, string $method) {
+        $message = "The controller method {$class}::{$method} returned null. "
+                 . "If you intend to skip any response or rendering, "
+                 . "return \$this->continue() instead.";
+        parent::__construct($message, Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+}
+
 class ControllerAction {
     private ControllerActionType $type = ControllerActionType::None;
     private array $params = [];
@@ -3516,8 +3531,9 @@ class ControllerAction {
     }
 
     public function getModel(): array {
-        if($this->type != ControllerActionType::View) throw new Exception("getModel can be called only for View type");
-        return $this->params["model"];
+        if($this->type != ControllerActionType::View) throw new Exception("getModel can be called only for View type");        
+        $model = $this->params["model"];
+        return is_null($model)? []: $model;
     }
 
     public function getJson(): string {
@@ -3525,7 +3541,7 @@ class ControllerAction {
         return json_encode($this->object);
     }
 
-    public static function makeViewModel($class, $view, $model, $clearContent) {
+    public static function makeViewModel(string $class, string $view, array|null $model, bool $clearContent): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->params = [
             "class" => $class,
@@ -3537,10 +3553,16 @@ class ControllerAction {
         return $viewModel;
     }
 
-    public static function makeJsonModel(mixed $object) {
+    public static function makeJsonModel(mixed $object): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->object = $object;
         $viewModel->type = ControllerActionType::Json;
+        return $viewModel;
+    }
+
+    public static function makeContinueModel() {
+        $viewModel = new ControllerAction();
+        $viewModel->type = ControllerActionType::None;
         return $viewModel;
     }
 }
@@ -3576,6 +3598,10 @@ class Controller {
 
     protected function json(mixed $object): ControllerAction {
         return ControllerAction::makeJsonModel($object);
+    }
+
+    protected function continue(): ControllerAction {
+        return ControllerAction::makeContinueModel();
     }
 }
 
