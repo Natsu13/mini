@@ -1012,7 +1012,7 @@ class Router {
 
     public function redirectToLoginIfNeeded(){
         $authentication = $this->authenticationProvider->get();                
-        if($authentication->isAuthenticated()) return;        
+        if(!$authentication->isAuthentificationRequired() || $authentication->isAuthenticated()) return;        
 
         $authUrl = $authentication->getAuthentificationUrl();
         if(!empty($authUrl)) {
