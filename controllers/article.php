@@ -16,6 +16,9 @@ class Article extends \Controller {
         return $this->view("index", ["id" => $id, "article" => $article]);
     }
 
+    /**
+     * @allowAnonymous
+     */
     public function apiTest() {
         return $this->json(["hello" => "article"]);
     }

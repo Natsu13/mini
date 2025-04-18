@@ -1014,6 +1014,16 @@ class Router {
         $authentication = $this->authenticationProvider->get();                
         if(!$authentication->isAuthentificationRequired() || $authentication->isAuthenticated()) return;        
 
+        if($this->request->isJsonRequest()) {
+            ob_clean();
+            http_response_code(401);
+            echo json_encode([
+                'status' => 'need_login',
+                'message' => 'You need to be loged in to view this page'
+            ]);
+            exit();
+        }
+        
         $authUrl = $authentication->getAuthentificationUrl();
         if(!empty($authUrl)) {
             $this->redirect($authUrl);
@@ -3295,7 +3305,7 @@ class Http {
         return $this;
 	}
 
-	public function postJson(string $url, string | object | array $json = null): self {
+	public function postJson(string $url, string | object | array $json = []): self {
         if(!is_string($json))
             $json = json_encode($json);
 
@@ -3381,7 +3391,7 @@ class Http {
         return $this;
 	}
 
-	public function getDebug(): string {
+	public function getDebug(): ?array {
 		return $this->lastCurlDebug;
 	}
 
@@ -3485,6 +3495,10 @@ class Request {
 
     public function isAjax(): bool {
         return !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    }
+
+    public function isJsonRequest(): bool {
+        return !(empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false) || $this->isAjax();
     }
 
     public function isSecure(): bool {
