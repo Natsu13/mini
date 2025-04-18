@@ -57,6 +57,8 @@ $router->start();
 echo "<html>";
     $page->head();
     echo "<body>";
+        //DebugTimer::dump();
+
         if (!$router->tryProcessController()) {
             $router->redirectToLoginIfNeeded();
 
@@ -127,7 +129,7 @@ echo "<html>";
                 $layout->render(ROOT . "/views/index.view", $model);
             }
         }
-        $page->footer();
+        $page->footer();        
     echo "</body>";
 echo "</html>";
 

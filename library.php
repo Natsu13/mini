@@ -159,6 +159,42 @@ class DocParser {
     }
 }
 
+if(defined("DEBUG")) {
+    class DebugTimer {
+        private static array $timers = [];
+
+        public static function start(string $name): void {
+            if (isset(self::$timers[$name])) {
+                throw new Exception("Timer '$name' is already running.");
+            }
+            self::$timers[$name] = microtime(true);
+        }
+
+        public static function stop(string $name): float {
+            if (!isset(self::$timers[$name])) {
+                throw new Exception("Timer '$name' was not started.");
+            }
+
+            $duration = microtime(true) - self::$timers[$name];
+            return $duration;
+        }
+
+        public static function dump(int $precision = 4): void {
+            echo "Debuging times: <br/>";
+            foreach(self::$timers as $name => $time) {
+                $duration = microtime(true) - $time;
+                echo "⏱ Timer '$name': " . round($duration, $precision) . " seconds<br/>";
+            }
+        }
+    }
+}else{
+    class DebugTimer {
+        public static function start(string $name): void {}
+        public static function stop(string $name): float { return 0.0; }
+        public static function dump(int $precision = 4): void { }
+    }
+}
+
 class Utilities {
     public static function vardump($object, $level = 0) {
         echo "<div style='margin-left: " . ($level * 10) . "px;' class='var-dump level-" . $level . "'>";
@@ -804,16 +840,120 @@ class Router {
     private ?string $matchedUrl = null;
     private ?array $routeData = null;
     private string $baseUrl;
+    private string $cacheFile = 'routes.cache.json';
+    private array $controllers = [];
+
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
     private Request $request;
-    private AuthentificatorProvider $authenticationProvider;
+    private AuthentificatorProvider $authenticationProvider;    
 
     public function __construct(Layout $layout, Request $request, AuthentificatorProvider $authenticationProvider) {
         $this->baseUrl = $this->generateBaseUrl();
         $this->layout = $layout;
         $this->request = $request;
         $this->authenticationProvider = $authenticationProvider;
+        $this->controllers = glob("Controllers/*.php");
+
+        $this->loadRoutes();
+    }
+
+    /* router cache from controller */
+
+    private function isCacheValid(): bool {
+        if (!file_exists($this->cacheFile)) {
+            return false;
+        }
+
+        $cache = json_decode(file_get_contents($this->cacheFile), true);
+
+        if (!isset($cache['hashes'])) {
+            return false;
+        }
+
+        foreach ($this->controllers as $file) {
+            $path = str_replace('\\', '/', $file); // normalize paths
+            if (!isset($cache['hashes'][$path]) || $cache['hashes'][$path] !== md5_file($file)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function loadFromCache() {
+        $cache = json_decode(file_get_contents($this->cacheFile), true);
+        foreach($cache['routes'] as $route) {
+            $this->add($route['route'], [$route['controller'], $route['method']]);
+        }
+    }
+
+    private function saveCache($routes) {
+        $hashes = [];
+        foreach ($this->controllers as $file) {
+            $path = str_replace('\\', '/', $file);
+            $hashes[$path] = md5_file($file);
+        }
+
+        $cache = [
+            'hashes' => $hashes,
+            'routes' => $routes
+        ];
+
+        file_put_contents($this->cacheFile, json_encode($cache, JSON_PRETTY_PRINT));
+    }
+
+    private function loadRoutes() {
+        DebugTimer::start('router.controller.loading');
+
+        if (!defined("DEBUG") && $this->isCacheValid()) {
+            $this->loadFromCache();
+        } else {
+            $routes = $this->generateRoutes();
+            foreach($routes as $route) {
+                $this->add($route['route'], [$route['controller'], $route['method']]);
+            }
+            $this->saveCache($routes);
+        }
+
+        DebugTimer::stop('router.controller.loading');
+    }
+
+    private function generateRoutes(): array {
+        $routes = [];
+
+        foreach ($this->controllers as $controller) {
+            $controllerName = basename($controller, ".php");
+            $controllerClass = "Controllers\\" . $controllerName;
+
+            if (class_exists($controllerClass)) {
+                $reflection = new ReflectionClass($controllerClass);
+
+                if ($reflection->isSubclassOf(Controller::class)) {
+                    $methods = $reflection->getMethods(ReflectionMethod::IS_PUBLIC);
+
+                    foreach ($methods as $method) {
+                        $docComment = $method->getDocComment();
+
+                        if ($docComment !== false) {                                
+                            DocParser::parse($docComment, function (string $annotation, array $arguments) use ($controllerClass, $method, &$routes) {
+                                if ($annotation === 'route' && !empty($arguments)) {
+                                    $route = $arguments[0];
+                                       
+                                    $routes[] = [
+                                        'route' => $route,
+                                        'controller' => $controllerClass,
+                                        'method' => $method->getName()
+                                    ];
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return $routes;
     }
 
     public static function url(bool $full = false, bool $_request = false): string {
@@ -1023,7 +1163,7 @@ class Router {
             ]);
             exit();
         }
-        
+
         $authUrl = $authentication->getAuthentificationUrl();
         if(!empty($authUrl)) {
             $this->redirect($authUrl);

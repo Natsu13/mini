@@ -22,4 +22,11 @@ class Article extends \Controller {
     public function apiTest() {
         return $this->json(["hello" => "article"]);
     }
+
+    /**
+     * @route("test/<i>")
+     */
+    public function test($i){
+        return $this->json(["hello" => "test ".$i]);
+    }
 }
