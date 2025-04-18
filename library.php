@@ -2602,7 +2602,6 @@ abstract class Model {
     public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin"): string {
         $reflection = new ReflectionClass($modelClass);
 
-        // Parse table name from class doc comment, e.g. @table("users")
         $docComment = $reflection->getDocComment();
         if (!$docComment || !preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
             throw new Exception("Table annotation (@table(...)) not found in class {$modelClass}");
@@ -2610,10 +2609,8 @@ abstract class Model {
         $tableName = $matches[1];
 
         $columns = [];
-        // Uložíme si mapu definovaných sloupců, abychom mohli ověřit, zda u asociací existuje cizí klíč.
         $definedColumns = [];
 
-        // Zpracování veřejných vlastností (columns)
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             $columnName = $property->getName();
 
@@ -2630,7 +2627,6 @@ abstract class Model {
                 $length = (int)$lengthMatch[1];
             }
 
-            // Inicializace proměnné pro přídavek COLLATE
             $charset = "";
             if ($typeName === 'string') {
                 if ($length) {
@@ -2657,7 +2653,7 @@ abstract class Model {
             }
 
             $primaryKey = ($propDoc && strpos($propDoc, '@primaryKey') !== false);
-            // Pokud typ umožňuje null a nejde o primární klíč, nastavíme NULL, jinak NOT NULL.
+            
             $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';
             $autoIncrementDisabled = ($propDoc && strpos($propDoc, '@autoIncrementDisabled') !== false);
 
@@ -2677,7 +2673,6 @@ abstract class Model {
             $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability}";
             if ($primaryKey) {
                 $colDefinition .= " PRIMARY KEY";
-                // Pro auto_increment platí, že pokud se jedná o int a není zakázáno, přidáme AUTO_INCREMENT.
                 if ($typeName === 'int' && !$autoIncrementDisabled) {
                     $colDefinition .= " AUTO_INCREMENT";
                 }
@@ -2690,22 +2685,30 @@ abstract class Model {
 
         $keys = [];
         $foreignKeys = [];
-        $keysAdded = []; // abychom nepřidali duplicitní index
+        $keysAdded = [];
+        $relationTables = [];
 
-        // Zpracování soukromých metod pro asociace (hasOne a hasMany)
         foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE) as $method) {
             $methodDoc = $method->getDocComment();
             if (!$methodDoc) {
                 continue;
             }
-            // Zpracujeme hasOne (u hasMany se cizí klíč nachází na straně druhé tabulky)
+            
             if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {
                 $relatedClass = $match[1];
-                // Pokud je zadán druhý parametr, použijeme jej jako název cizího klíče, jinak odvodíme z názvu metody.
+                if(!isset($relationTables[$relatedClass])) {
+                    $docComment = new ReflectionClass("\\Models\\".$relatedClass);                    
+                    if (preg_match('/@table\("([^"]+)"\)/', $docComment->getDocComment(), $matches)) {                        
+                        $relatedClass = $relationTables[$relatedClass] = $matches[1];
+                    } else {
+                        $relationTables[$relatedClass] = $relatedClass;
+                    }
+                }else{
+                    $relatedClass = $relationTables[$relatedClass];
+                }
+
                 $foreignKeyColumn = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';
-                // Vygenerujeme cizí klíč a index, pouze pokud je sloupec definován mezi veřejnými vlastnostmi.
                 if (isset($definedColumns[$foreignKeyColumn])) {
-                    // Přidáme index, pokud jsme ho zatím nepřidali.
                     if (!isset($keysAdded[$foreignKeyColumn])) {
                         $indexName = preg_replace('/_id$/', '', $foreignKeyColumn);
                         if ($indexName === "") {
@@ -2720,7 +2723,6 @@ abstract class Model {
         }
 
         $columnsSql = implode(",\n    ", $columns);
-        // Pokud máme indexy a/nebo cizí klíče, přidáme je za definice sloupců.
         $constraints = array_merge($keys, $foreignKeys);
         $constraintsSql = !empty($constraints) ? ",\n    " . implode(",\n    ", $constraints) : "";
 
@@ -3834,7 +3836,7 @@ class CookieAuthentication implements AuthenticationMethod {
     }
 
     public function isAuthenticated(): bool {
-        if(isset($_COOKIE[$this->cookieName])) return true;
+        if(isset($_COOKIE[$this->cookieName]) && Cookies::security_check($this->cookieName)) return true;
         return false;
     }
 
