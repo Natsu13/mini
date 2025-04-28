@@ -1153,7 +1153,7 @@ class Router {
     public function redirectToLoginIfNeeded(){
         $authentication = $this->authenticationProvider->get();                
         if(!$authentication->isAuthentificationRequired() || $authentication->isAuthenticated()) return;        
-
+        
         if($this->request->isJsonRequest()) {
             ob_clean();
             http_response_code(401);
@@ -2583,9 +2583,7 @@ abstract class Model {
     }
 
     public static function where($condition, $params = []): QueryBuilder {
-        $obj = (new static);
-        $builder = new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
-        return $builder->where($condition, $params);
+        return self::toQuery()->where($condition, $params);
     }
 
     public static function toQuery(): QueryBuilder {
@@ -2628,7 +2626,7 @@ abstract class Model {
             if ($property !== $primaryKey) {
                 $columns[] = $column;
                 $value = $this->$property;
-                // Pokud je definována délka pro daný sloupec a hodnota je typu string, ořízneme ji
+                
                 if (isset($this->columnsDefinition[$column]['length']) && is_string($value)) {
                     $maxLength = $this->columnsDefinition[$column]['length'];
                     if ($maxLength !== null && mb_strlen($value) > $maxLength) {
@@ -3638,7 +3636,7 @@ class Request {
     }
 
     public function isJsonRequest(): bool {
-        return !(empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false) || $this->isAjax();
+        return (empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false) || $this->isAjax();
     }
 
     public function isSecure(): bool {
@@ -3972,8 +3970,10 @@ class CookieAuthentication implements AuthenticationMethod {
     private string $cookieName = "session";
     private int $cookieExpire = 0;
 
-    public function __construct(string $cookieName, string | int $expiration = 0) {
-        $this->cookieName = $cookieName;
+    public function __construct(string $cookieName = "", string | int $expiration = 0) {
+        if($cookieName != "") {
+            $this->cookieName = $cookieName;
+        }
         $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day", 0): (is_int($expiration)? $expiration: strtotime($expiration, 0)));        
     }
 
@@ -3990,8 +3990,7 @@ class CookieAuthentication implements AuthenticationMethod {
     }
 
     public function isAuthenticated(): bool {
-        if(isset($_COOKIE[$this->cookieName]) && Cookies::security_check($this->cookieName)) return true;
-        return false;
+        return isset($_COOKIE[$this->cookieName]) && Cookies::security_check($this->cookieName);
     }
 
     public function getValue(): string | object | null {
