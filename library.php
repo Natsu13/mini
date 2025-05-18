@@ -2491,8 +2491,22 @@ abstract class Model {
                 $defaultValue = trim($matches[1], '"\'');
             } else {
                 if ($type instanceof ReflectionNamedType) {
+                    $typeName = $type->getName();
+
                     if ($type->allowsNull()) {
                         $defaultValue = null;
+                    } else if(!$type->isBuiltin() && class_exists($typeName)) {
+                        $refClass = new ReflectionClass($typeName);
+                        if ($refClass->isEnum()) {
+                            $enumCases = $typeName::cases();
+                            if (count($enumCases) > 0) {
+                                $defaultValue = $enumCases[0];
+                            } else {
+                                throw new Exception("Enum $typeName has no defined values");
+                            }
+                        } else {
+                            throw new Exception("Class $typeName is not an enum");
+                        }
                     } else {
                         switch ($type->getName()) {
                             case 'int':
