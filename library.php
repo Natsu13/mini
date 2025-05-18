@@ -2746,17 +2746,19 @@ abstract class Model {
         $relation = $relationships[$method];
         $result = null;
 
-        $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
         if ($relation['type'] === 'hasMany') {                        
-            $className = "Models\\". $relation['class'];       
+            $foreignKey = isset($this->mappings[$relation['foreignKey']])? $this->mappings[$relation['foreignKey']]: $relation['foreignKey'];
+            $className = "Models\\". $relation['class'];
             
             $result = (new $className)
                 ->where([$foreignKey => $this->{static::$primaryKey}]);
                 //->fetchAll();
         }
         else if ($relation['type'] === 'belongsTo') {
+            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
             $foreignValue = $this->{$foreignKey};
             $className = "Models\\". $relation['class'];
+            
             $result = $foreignValue ? ($className)::findById($foreignValue) : null;
         }
 
