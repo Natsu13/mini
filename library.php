@@ -2461,10 +2461,32 @@ abstract class Model {
         else if (method_exists($this, 'onCreated'))
             $this->onCreated();
 
+        $reflector = new ReflectionClass($this);
+        
         foreach ($data as $column => $value) {
-            $property = array_search($column, $this->mappings, true);
-            if ($property !== false) {
-                $this->$property = $value;
+            $propertyName = array_search($column, $this->mappings, true);
+            if ($propertyName !== false) {
+                $property = $reflector->getProperty($propertyName);
+                $type = $property->getType();
+
+                if ($type instanceof ReflectionNamedType && !$type->isBuiltin()) {
+                    $typeName = $type->getName();
+
+                    if (enum_exists($typeName)) {
+                        $refEnum = new ReflectionEnum($typeName);
+                        if ($refEnum->isBacked()) {
+                            $enumValue = $typeName::tryFrom($value);
+                            if ($enumValue !== null) {
+                                $this->$propertyName = $enumValue;
+                            } else {
+                                throw new \UnexpectedValueException("Neplatná hodnota '$value' pro enum $typeName");
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                $this->$propertyName = $value;
             }
         }
     }
