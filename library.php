@@ -2770,6 +2770,18 @@ abstract class Model {
             $type = $property->getType();
             $typeName = $type ? $type->getName() : 'string';
 
+            if (!$type->isBuiltin() && class_exists($typeName)) {
+                $refClass = new ReflectionClass($typeName);
+                if ($refClass->isEnum()) {
+                    $refEnum = new ReflectionEnum($typeName);
+                    if($refEnum->isBacked()) {
+                        $typeName = $refEnum->getBackingType()->getName();
+                    }else{
+                        throw new Exception("Enum {$typeName} is not backed enum, you need specify it's type");
+                    }
+                }
+            }
+
             $length = null;
             if ($propDoc && preg_match('/@length\((\d+)\)/', $propDoc, $lengthMatch)) {
                 $length = (int)$lengthMatch[1];
