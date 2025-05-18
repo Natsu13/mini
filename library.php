@@ -1069,6 +1069,7 @@ class Router {
 
         $instance = Container::getInstance()->create($class);
 
+        //TODO: problem like "sort" etc.. functions is callable :/ maybe we can make that it must be anonymouse method
         if(is_callable($methodNameOrCallback)){
             $method = $methodNameOrCallback($variables);            
         }else {
@@ -2663,12 +2664,21 @@ abstract class Model {
                 $columns[] = $column;
                 $value = $this->$property;
                 
-                if (isset($this->columnsDefinition[$column]['length']) && is_string($value)) {
+                if (is_object($value) && $value instanceof \UnitEnum) {
+                    if ($value instanceof \BackedEnum) {
+                        $value = $value->value;
+                    } else {
+                        throw new Exception("Enum {$column} has no value (not a backed enum)");
+                    }
+                }
+
+                if (is_string($value) && isset($this->columnsDefinition[$column]['length'])) {
                     $maxLength = $this->columnsDefinition[$column]['length'];
                     if ($maxLength !== null && mb_strlen($value) > $maxLength) {
                         $value = mb_substr($value, 0, $maxLength);
                     }
                 }
+                
                 $values[] = $value;
             }
         }
