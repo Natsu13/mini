@@ -5,17 +5,67 @@ if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
 }
 
-spl_autoload_register(function ($class) {    
-    $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php');
-
-    if (file_exists($file)) {
-        require_once $file;
-    }else {
-        throw new Exception("SplAutoload: File not found: ".$file);
-    }
-});
-
 define("ROOT", str_replace("\\", "/", getcwd()));
+
+class Autoload {
+    private string $cacheFile;
+    private array $classMap = [];
+    private array $loadedFiles = [];
+
+    public function __construct() {
+        $this->cacheFile =__DIR__ . '/autoload.cache.json';
+        if (file_exists($this->cacheFile)) {
+            $this->classMap = json_decode(file_get_contents($this->cacheFile), true) ?? [];
+        }
+    }
+
+    private function getDeclaredClassSet(): array {
+        return array_merge(get_declared_classes(), get_declared_interfaces(), get_declared_traits());
+    }
+
+    public function register(): void {
+        spl_autoload_register([$this, 'loadClass']);
+    }
+
+    public function loadClass(string $class): void {
+        if (isset($this->classMap[$class])) {
+            $file = $this->classMap[$class];
+            if (!in_array($file, $this->loadedFiles, true)) {
+                require_once $file;
+                $this->loadedFiles[] = $file;
+            }
+            return;
+        }
+
+        $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class) . '.php');
+
+        if (!file_exists($file)) {
+            throw new Exception("Autoloader: File '$file' for class '$class' does not exist.");
+        }
+
+        $before = $this->getDeclaredClassSet();
+        require_once $file;
+        $after = $this->getDeclaredClassSet();
+
+        $newClasses = array_diff($after, $before);
+
+        foreach ($newClasses as $newClass) {
+            $this->classMap[$newClass] = $file;
+        }
+
+        file_put_contents(
+            $this->cacheFile,
+            json_encode($this->classMap, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
+
+        if (!in_array($class, $newClasses, true)
+            && !class_exists($class, false)
+            && !interface_exists($class, false)
+            && !trait_exists($class, false)) {
+            throw new Exception("Autoloader: Class '$class' could not be loaded from file '$file'.");
+        }
+    }
+}
 
 class DocParser {
     /**
@@ -1049,6 +1099,7 @@ class Router {
     }
 
     private function processVariables($variables) {
+        if($variables == null || !is_array($variables)) return;
         foreach($variables as $name => $value) {
             $_GET[$name] = $value;
         }
@@ -2425,18 +2476,24 @@ class Database {
     }
 }
 
-enum ModelState {
-    case New;       //You created the model
-    case Loaded;    //Model was loaded from database
-    case Changed;   //After model saved
+enum ModelState: string {
+    case New = 'new';           //You created the model
+    case Loaded = 'loaded';     //Model was loaded from database
+    case Changed = 'changed';   //After model saved
+}
+
+class ModelDefinition {
+    public string $tableName;
+    public string $primaryKey;
+    public bool $primaryKeyAutoIncrement = true;
 }
 
 abstract class Model {
-    protected static string $table;
-    protected static string $primaryKey;
-    protected static bool $primaryKeyAutoIncrement = true;
-
-    protected string $tableNameInstance;
+    private string $table;
+    private string $primaryKey;
+    private bool $primaryKeyAutoIncrement = true;
+    
+    protected static $definitions = [];
 
     protected $mappings = [];
     protected $mappingsBack = [];
@@ -2450,8 +2507,26 @@ abstract class Model {
         $this->database = Container::getInstance()->get(Database::class);
         $this->loadDefaults();
         $this->populate($data);
+    }
 
-        $this->tableNameInstance = static::$table;
+    protected static function getTableDefinition(): ModelDefinition {
+        $class = static::class;
+        if(isset(Model::$definitions[$class])) 
+            return Model::$definitions[$class];
+
+        $object = new $class();
+        
+        $def = new ModelDefinition();
+        $def->tableName = $object->table;
+        $def->primaryKey = $object->primaryKey;
+        $def->primaryKeyAutoIncrement = $object->primaryKeyAutoIncrement;
+
+        Model::$definitions[$class] = $def;
+        return $def;
+    }
+
+    private static function getConnection(): PDO {
+        return Container::getInstance()->get(Database::class)->getConnection();
     }
 
     private function populate(array $data) {
@@ -2558,10 +2633,10 @@ abstract class Model {
 
         $docComment = $reflector->getDocComment();
         if (preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
-            static::$table = $matches[1];
+            $this->table = $matches[1];
         }
 
-        if(static::$table == null) {
+        if($this->table == null) {
             throw new Exception("Table name is not set for model ".get_class($this));
         }
 
@@ -2576,10 +2651,10 @@ abstract class Model {
             $length = null;
 
             if (strpos($docComment, '@primaryKey') !== false) {
-                static::$primaryKey = $column;
+                $this->primaryKey = $column;
 
                 if (strpos($docComment, '@autoIncrementDisabled') !== false) {
-                    static::$primaryKeyAutoIncrement = false;
+                    $this->primaryKeyAutoIncrement = false;
                 }
             }
 
@@ -2601,14 +2676,14 @@ abstract class Model {
     }
 
     public static function findById(int|string $id): ?static {
-        $obj = (new static);
-        return $obj->where([static::$primaryKey => $id])->fetch();
+        $definition = self::getTableDefinition();
+        return self::where([$definition->primaryKey => $id])->fetch();
     }
 
     public static function fetchAll(): ?array {
-        $obj = (new static);
-        $db = $obj->database->getConnection();
-        $stmt = $db->prepare("SELECT * FROM ".static::$table);  
+        $definition = self::getTableDefinition();
+        $db = self::getConnection();
+        $stmt = $db->prepare("SELECT * FROM ".$definition->tableName);  
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -2624,8 +2699,8 @@ abstract class Model {
     }
 
     public static function toQuery(): QueryBuilder {
-        $obj = (new static);
-        return new QueryBuilder($obj->database->getConnection(), static::$table, static::class);
+        $definition = self::getTableDefinition();
+        return new QueryBuilder(self::getConnection(), $definition->tableName, static::class);
     }
 
     /**
@@ -2633,14 +2708,14 @@ abstract class Model {
      */
     public function delete(): string {
         $db = $this->database->getConnection();
-        $primaryKey = static::$primaryKey;
+        $primaryKey = $this->primaryKey;
 
         if($primaryKey == null || $this->state === ModelState::New) {
             throw new Exception("Primary key is not set for model ".get_class($this).", or the model was not saved so we can't delete the model");
         }
 
         //TODO: delete all childs
-        $stmt = $db->prepare("DELETE FROM " . $this->tableNameInstance . " WHERE $primaryKey = ?");
+        $stmt = $db->prepare("DELETE FROM " . $this->table . " WHERE $primaryKey = ?");
         $stmt->execute([$this->$primaryKey]);
         return $stmt->rowCount() > 0;
     }
@@ -2651,7 +2726,7 @@ abstract class Model {
     public function save(): bool {
         $db = $this->database->getConnection();
         $columns = array_map(fn($key) => $this->mappings[$key], array_keys($this->attributes));
-        $primaryKey = static::$primaryKey;
+        $primaryKey = $this->primaryKey;
 
         if($primaryKey == null) {
             throw new Exception("Primary key is not set for model ".get_class($this)." so we can't save the model");
@@ -2671,14 +2746,14 @@ abstract class Model {
                         throw new Exception("Enum {$column} has no value (not a backed enum)");
                     }
                 }
-
+                
                 if (is_string($value) && isset($this->columnsDefinition[$column]['length'])) {
                     $maxLength = $this->columnsDefinition[$column]['length'];
                     if ($maxLength !== null && mb_strlen($value) > $maxLength) {
                         $value = mb_substr($value, 0, $maxLength);
                     }
                 }
-                
+
                 $values[] = $value;
             }
         }
@@ -2686,10 +2761,10 @@ abstract class Model {
         if ($this->$primaryKey === null || $this->state === ModelState::New) {
             // INSERT
             $placeholders = array_fill(0, count($columns), '?');
-            $stmt = $db->prepare("INSERT INTO " . $this->tableNameInstance . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
+            $stmt = $db->prepare("INSERT INTO " . $this->table . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
 
             if ($stmt->execute($values)) {
-                if (static::$primaryKeyAutoIncrement) {
+                if ($this->primaryKeyAutoIncrement) {
                     $this->$primaryKey = $db->lastInsertId();
                 }
 
@@ -2702,7 +2777,7 @@ abstract class Model {
             foreach ($columns as $column) {
                 $setColumns[] = "$column = ?";
             }
-            $stmt = $db->prepare("UPDATE " . $this->tableNameInstance . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
+            $stmt = $db->prepare("UPDATE " . $this->table . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
             $values[] = $this->$primaryKey;
 
             $this->state = ModelState::Changed;
@@ -2755,20 +2830,20 @@ abstract class Model {
 
         $relation = $relationships[$method];
         $result = null;
-
+        
         if ($relation['type'] === 'hasMany') {                        
             $foreignKey = isset($this->mappings[$relation['foreignKey']])? $this->mappings[$relation['foreignKey']]: $relation['foreignKey'];
             $className = "Models\\". $relation['class'];
             
             $result = (new $className)
-                ->where([$foreignKey => $this->{static::$primaryKey}]);
+                ->where([$foreignKey => $this->{$this->primaryKey}]);
                 //->fetchAll();
         }
         else if ($relation['type'] === 'belongsTo') {
             $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
             $foreignValue = $this->{$foreignKey};
             $className = "Models\\". $relation['class'];
-            
+
             $result = $foreignValue ? ($className)::findById($foreignValue) : null;
         }
 
@@ -2828,7 +2903,7 @@ abstract class Model {
                         throw new Exception("Enum {$typeName} is not backed enum, you need specify it's type");
                     }
                 }
-            }
+            }            
 
             $length = null;
             if ($propDoc && preg_match('/@length\((\d+)\)/', $propDoc, $lengthMatch)) {
@@ -2896,13 +2971,13 @@ abstract class Model {
         $keysAdded = [];
         $relationTables = [];
 
-        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE) as $method) {
-            $methodDoc = $method->getDocComment();
+        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE) as $method) {            
+            $methodDoc = $method->getDocComment();            
             if (!$methodDoc) {
                 continue;
             }
-            
-            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {
+                                            
+            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {                                                      
                 $relatedClass = $match[1];
                 if(!isset($relationTables[$relatedClass])) {
                     $docComment = new ReflectionClass("\\Models\\".$relatedClass);                    
@@ -2913,7 +2988,7 @@ abstract class Model {
                     }
                 }else{
                     $relatedClass = $relationTables[$relatedClass];
-                }
+                }                
 
                 $foreignKeyColumn = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';
                 if (isset($definedColumns[$foreignKeyColumn])) {
@@ -4059,9 +4134,12 @@ class CookieAuthentication implements AuthenticationMethod {
     }
 }
 
-define("CACHE", 1);
+if(!defined("CACHE")) {
+    define("CACHE", 1);
+}
 
 $container = Container::getInstance();
+$container->setSingleton(Autoload::class);
 $container->setSingleton(Router::class);
 $container->setSingleton(Page::class);
 $container->setSingleton(Layout::class);
@@ -4073,3 +4151,5 @@ $container->setSingleton(AuthentificatorProvider::class);
 if(defined("USE_USERS")) {
     $container->setSingleton(UserService::class);
 }
+
+$container->get(Autoload::class)->register();
