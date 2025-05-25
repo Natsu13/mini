@@ -702,7 +702,7 @@ class Paginator {
 
         $jsCallback = null;
         if($this->options["jsCallback"] != null) {
-            $jsCallback = " onclick=\"return ".$this->options["jsCallback"]."(this, %d);\"";
+            $jsCallback = " onclick=\"return ".$this->options["jsCallback"].";\"";
         }
 
         if($type == PaginatorType::Page) {
@@ -2810,6 +2810,21 @@ abstract class Model {
         return new QueryBuilder(self::getConnection(), $definition->tableName, static::class);
     }
 
+    public static function toList(int $limit = 20, ?string $orderBy = null, ?int $page = null, array $options = [], ?QueryBuilder $query = null): ModelListResult {
+        if($query == null) $query = self::toQuery();        
+
+        if($page != null) $options["currentPage"] = $page;
+        $paginator = new \Paginator($query->count(), $limit, \Router::url(true), $options);
+        if($orderBy) $query = $query->order($orderBy);
+
+        $result = $query->limit($limit)->page($paginator->getCurrentPage());
+
+        $model = new ModelListResult();
+        $model->query = $result;
+        $model->paginator = $paginator;
+        return $model;
+    }
+
     /**
      * Delete the row in table by id
      */
@@ -3129,6 +3144,11 @@ abstract class Model {
         $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}{$constraintsSql}\n) ENGINE=InnoDB DEFAULT CHARSET={$defaultCharset} COLLATE={$defaultCollation};";
         return $sql;
     }
+}
+
+class ModelListResult {
+    public QueryBuilder $query;
+    public Paginator $paginator;
 }
 
 enum DataTableLike {
