@@ -5,6 +5,16 @@ if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
 }
 
+/*spl_autoload_register(function ($class) {    
+    $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php');
+
+    if (file_exists($file)) {
+        require_once $file;
+    }else {
+        throw new Exception("SplAutoload: File not found: ".$file);
+    }
+});*/
+
 define("ROOT", str_replace("\\", "/", getcwd()));
 
 class Autoload {
@@ -13,9 +23,48 @@ class Autoload {
     private array $loadedFiles = [];
 
     public function __construct() {
-        $this->cacheFile =__DIR__ . '/autoload.cache.json';
+        $this->cacheFile = __DIR__ . '/autoload.cache.json';
+        $this->loadCache();
+    }
+
+    private function loadCache(): void {
         if (file_exists($this->cacheFile)) {
-            $this->classMap = json_decode(file_get_contents($this->cacheFile), true) ?? [];
+            $content = file_get_contents($this->cacheFile);
+            $this->classMap = json_decode($content, true) ?? [];
+        }
+    }
+
+    private function saveCache(): void {
+        // Před zápisem znovu načteme cache pro zajištění konzistence
+        $currentCache = [];
+        if (file_exists($this->cacheFile)) {
+            $content = file_get_contents($this->cacheFile);
+            $currentCache = json_decode($content, true) ?? [];
+        }
+
+        // Sloučíme aktuální cache s naší lokální kopií
+        $mergedCache = array_merge($currentCache, $this->classMap);
+
+        // Pokusíme se o atomický zápis pomocí lock
+        $lockFile = $this->cacheFile . '.lock';
+        $lockHandle = fopen($lockFile, 'w');
+        
+        if (flock($lockHandle, LOCK_EX)) {
+            try {
+                file_put_contents(
+                    $this->cacheFile,
+                    json_encode($mergedCache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+                    LOCK_EX
+                );
+                $this->classMap = $mergedCache;
+            } finally {
+                flock($lockHandle, LOCK_UN);
+                fclose($lockHandle);
+                @unlink($lockFile);
+            }
+        } else {
+            fclose($lockHandle);
+            @unlink($lockFile);
         }
     }
 
@@ -28,11 +77,20 @@ class Autoload {
     }
 
     public function loadClass(string $class): void {
+        // Před každým pokusem o načtení aktualizujeme cache
+        $this->loadCache();
+
         if (isset($this->classMap[$class])) {
             $file = $this->classMap[$class];
             if (!in_array($file, $this->loadedFiles, true)) {
-                require_once $file;
-                $this->loadedFiles[] = $file;
+                if (file_exists($file)) {
+                    require_once $file;
+                    $this->loadedFiles[] = $file;
+                } else {
+                    // Soubor neexistuje, odebereme ho z cache
+                    unset($this->classMap[$class]);
+                    $this->saveCache();
+                }
             }
             return;
         }
@@ -48,15 +106,19 @@ class Autoload {
         $after = $this->getDeclaredClassSet();
 
         $newClasses = array_diff($after, $before);
+        $hasNewClasses = false;
 
         foreach ($newClasses as $newClass) {
-            $this->classMap[$newClass] = $file;
+            if (!isset($this->classMap[$newClass])) {
+                $this->classMap[$newClass] = $file;
+                $hasNewClasses = true;
+            }
         }
 
-        file_put_contents(
-            $this->cacheFile,
-            json_encode($this->classMap, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-        );
+        // Cache ukládáme pouze pokud máme nové třídy
+        if ($hasNewClasses) {
+            $this->saveCache();
+        }
 
         if (!in_array($class, $newClasses, true)
             && !class_exists($class, false)
@@ -64,6 +126,36 @@ class Autoload {
             && !trait_exists($class, false)) {
             throw new Exception("Autoloader: Class '$class' could not be loaded from file '$file'.");
         }
+    }
+
+    // Metoda pro ruční přidání tříd do cache
+    public function addClass(string $class, string $file): void {
+        $this->loadCache();
+        $this->classMap[$class] = $file;
+        $this->saveCache();
+    }
+
+    // Metoda pro vyčištění neexistujících souborů z cache
+    public function cleanCache(): void {
+        $this->loadCache();
+        $cleaned = false;
+        
+        foreach ($this->classMap as $class => $file) {
+            if (!file_exists($file)) {
+                unset($this->classMap[$class]);
+                $cleaned = true;
+            }
+        }
+        
+        if ($cleaned) {
+            $this->saveCache();
+        }
+    }
+
+    // Getter pro debug účely
+    public function getClassMap(): array {
+        $this->loadCache();
+        return $this->classMap;
     }
 }
 
@@ -458,6 +550,18 @@ class Date {
 
         return $formatted;
     }
+
+    /**
+     * @param string $datumText date in format j.n.Y H:i or specify by $format
+     * @param string $format format of the date
+     */
+    public static function toTimestamp(string $datumText, string $format = 'j.n.Y H:i'): int {
+        $dt = DateTime::createFromFormat($format, $datumText);
+        if (!$dt) {
+            throw new Exception("Invalid date format: $datumText");
+        }
+        return $dt->getTimestamp();
+    }
 }
 
 enum PaginatorType {
@@ -492,11 +596,12 @@ class Paginator {
             'textClass' => 'page-text',
             'activeClass' => 'active',
             'displayCount' => 7,
-            'jsCallback' => null
+            'jsCallback' => null,
+            'currentPage' => null
         ], $options);
 
         $this->urlPattern = $this->processUrlPattern($urlPattern);
-        $this->currentPage = $this->getCurrentPage();
+        $this->currentPage = $this->options['currentPage'] == null? $this->getCurrentPage(): intval($this->options['currentPage']);
     }
 
     private function processUrlPattern(string $url): string {
@@ -612,7 +717,7 @@ class Paginator {
                 $itemClass,
                 $url,
                 $linkClass,
-                sprintf($jsCallback, $page),
+                $jsCallback == null? "": sprintf($jsCallback, $page),
                 $page
             );
         } else if($type == PaginatorType::Dots) {
@@ -635,7 +740,7 @@ class Paginator {
                 $itemClass,
                 $url,
                 $linkClass,
-                sprintf($jsCallback, $page),
+                $jsCallback == null? "": sprintf($jsCallback, $page),
                 $value
             );
         }
@@ -1108,7 +1213,7 @@ class Router {
     private function callController($definition, $variables){
         if(!is_array($definition)) throw new Exception("Definition must be array [class, method]");        
         $class = $originalClass = $definition[0];
-        $methodNameOrCallback = count($definition) > 1? $definition[1]: "index";
+        $methodNameOrCallback = count($definition) > 1? $definition[1]: "index";        
         
         if(substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\". $class;          
         if(!class_exists($class) && class_exists($class."Controller")) $class .= "Controller";
@@ -1128,7 +1233,7 @@ class Router {
         }
 
         if($method == null || $method == "") $method = "index";
-
+        
         if(!method_exists($instance, $method)) 
             throw new Exception("Method $method not found in class $class");
 
@@ -2010,7 +2115,9 @@ class TemplaterV2 {
 			$this->eatControll(); //{/function}
 
 			return $output;
-		}else if($type == "var") {
+        } else if($type == "use") {
+            return "<?php use ".$value."; ?>";
+		} else if($type == "var") {
 			//@todo: maybe like dot as start or :
 			$addEnd = !(substr($value, strlen($value) -1, 1) == ";");
             return "<?php ".$value.($addEnd? ";": "")." ?>";
@@ -2851,6 +2958,16 @@ abstract class Model {
         return $result;
     }
 
+    /**
+     * Get relation by method name - can be called internally by the class itself
+     * 
+     * @param string $relationName Name of the relation method
+     * @return mixed The relation result (QueryBuilder for hasMany, Model instance or null for belongsTo/hasOne)
+     */
+    protected function getRelation(string $relationName) {
+        return $this->loadRelationship($relationName);
+    }
+
     public function __call($method, $args) {
         $relationships = $this->getRelationships();
     
@@ -3069,11 +3186,13 @@ class QueryBuilder {
         if(is_array($condition)) {
             foreach($condition as $key => $cond) {
                 $bindName = $this->generateBindName();
+                $compare = $cond === null? "IS": "=";
+
                 $this->where[] = [
                     'type' => count($this->where) > 0 ? 'AND' : '',
-                    'value' => "$key = $bindName",
+                    'value' => "$key $compare $bindName",
                     'binds' => [$bindName => $cond],
-                ];                
+                ];        
             }
 
             return $this;
@@ -3178,7 +3297,7 @@ class QueryBuilder {
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $this->debugCapture($stmt);
+        $this->debugCapture($stmt);        
 
         if ($this->className) {
             $objects = [];
@@ -3331,7 +3450,7 @@ class QueryBuilder {
         if (!empty($this->where)) {
             $whereParts = [];
             foreach ($this->where as $where) {
-                $whereParts[] = ($where["type"] ?? "") . " " . $where["value"];
+                $whereParts[] = ($where["type"] ?? "") . " " . $where["value"];                
                 $binds = array_merge($binds, $where["binds"]);
             }
             $sql[] = "WHERE " . implode(" ", $whereParts);
