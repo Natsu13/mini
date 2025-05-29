@@ -5,22 +5,20 @@ if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
 }
 
-/*spl_autoload_register(function ($class) {    
-    $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class).'.php');
-
-    if (file_exists($file)) {
-        require_once $file;
-    }else {
-        throw new Exception("SplAutoload: File not found: ".$file);
-    }
-});*/
-
 define("ROOT", str_replace("\\", "/", getcwd()));
 
+/**
+ * $autoloader->addLib("PhpSpreadsheet", "PhpOffice", "libs");
+ * Debuging the libs
+ * $autoloader = \Container::getInstance()->get(\Autoload::class);     
+ * Utilities::vardump($autoloader->debugClass('PhpOffice\PhpSpreadsheet\Spreadsheet'));
+ * Utilities::vardump($autoloader->getLibraryPaths());
+ */
 class Autoload {
     private string $cacheFile;
     private array $classMap = [];
     private array $loadedFiles = [];
+    private array $libraryPaths = [];
 
     public function __construct() {
         $this->cacheFile = __DIR__ . '/autoload.cache.json';
@@ -30,7 +28,9 @@ class Autoload {
     private function loadCache(): void {
         if (file_exists($this->cacheFile)) {
             $content = file_get_contents($this->cacheFile);
-            $this->classMap = json_decode($content, true) ?? [];
+            $data = json_decode($content, true) ?? [];
+            $this->classMap = $data['classMap'] ?? [];
+            $this->libraryPaths = $data['libraryPaths'] ?? [];
         }
     }
 
@@ -43,7 +43,13 @@ class Autoload {
         }
 
         // Sloučíme aktuální cache s naší lokální kopií
-        $mergedCache = array_merge($currentCache, $this->classMap);
+        $mergedClassMap = array_merge($currentCache['classMap'] ?? [], $this->classMap);
+        $mergedLibraryPaths = array_merge($currentCache['libraryPaths'] ?? [], $this->libraryPaths);
+
+        $mergedCache = [
+            'classMap' => $mergedClassMap,
+            'libraryPaths' => $mergedLibraryPaths
+        ];
 
         // Pokusíme se o atomický zápis pomocí lock
         $lockFile = $this->cacheFile . '.lock';
@@ -56,7 +62,8 @@ class Autoload {
                     json_encode($mergedCache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
                     LOCK_EX
                 );
-                $this->classMap = $mergedCache;
+                $this->classMap = $mergedClassMap;
+                $this->libraryPaths = $mergedLibraryPaths;
             } finally {
                 flock($lockHandle, LOCK_UN);
                 fclose($lockHandle);
@@ -73,7 +80,60 @@ class Autoload {
     }
 
     public function register(): void {
-        spl_autoload_register([$this, 'loadClass']);
+        spl_autoload_register([$this, 'loadClass'], /* throw = */ true, /* prepend = */ false);
+    }
+
+    /**
+     * Přidá knihovnu s vlastním namespace a cestou
+     * @param string $name Název knihovny (např. "PhpSpreadsheet")
+     * @param string $namespace Root namespace knihovny (např. "PhpOffice")
+     * @param string $path Cesta ke knihovně (např. "libs/PhpSpreadsheet")
+     */
+    public function addLib(string $name, string $namespace = '', string $path = ''): void {
+        // Pokud není zadán namespace, použije se název knihovny
+        if (empty($namespace)) {
+            $namespace = $name;
+        }
+        
+        // Pokud není zadána cesta, použije se libs/{name}
+        if (empty($path)) {
+            $path = 'libs/' . $name;
+        }
+
+        // Normalize namespace (odstraní leading/trailing backslashes)
+        $namespace = trim($namespace, '\\');
+        
+        // Normalize path
+        $path = rtrim($path, '/\\');
+
+        $this->loadCache();
+        $this->libraryPaths[$namespace] = $path;
+        $this->saveCache();
+    }
+
+    /**
+     * Najde soubor pro danou třídu na základě registrovaných knihoven
+     */
+    private function findFileForClass(string $class): ?string {
+        foreach ($this->libraryPaths as $namespace => $basePath) {
+            if (strpos($class, $namespace . '\\') === 0) {
+                // Odstraníme root namespace z názvu třídy
+                $relativePath = substr($class, strlen($namespace) + 1);
+                
+                // Převedeme namespace na cestu
+                $filePath = str_replace('\\', DIRECTORY_SEPARATOR, $relativePath) . '.php';
+                $fullPath = $basePath . DIRECTORY_SEPARATOR . $filePath;
+                
+                // Debug - můžeš toto dočasně odkomentovat pro testování
+                // echo "Trying: $fullPath\n";
+                
+                if (file_exists($fullPath)) {
+                    return $fullPath;
+                }
+            }
+        }
+        
+        return null;
     }
 
     public function loadClass(string $class): void {
@@ -95,10 +155,20 @@ class Autoload {
             return;
         }
 
-        $file = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class) . '.php');
+        // Nejprve zkusíme najít soubor pomocí registrovaných knihoven
+        $file = $this->findFileForClass($class);
+        
+        // Pokud nenajdeme v knihovnách, zkusíme standardní cestu
+        if (!$file) {
+            $standardFile = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class) . '.php');
+            if (file_exists($standardFile)) {
+                $file = $standardFile;
+            }
+        }
 
-        if (!file_exists($file)) {
-            throw new Exception("Autoloader: File '$file' for class '$class' does not exist.");
+        if (!$file || !file_exists($file)) {
+            //throw new Exception("Autoloader: File for class '$class' does not exist. Tried library paths and standard path.");
+            return;
         }
 
         $before = $this->getDeclaredClassSet();
@@ -156,6 +226,55 @@ class Autoload {
     public function getClassMap(): array {
         $this->loadCache();
         return $this->classMap;
+    }
+
+    // Getter pro registrované knihovny
+    public function getLibraryPaths(): array {
+        $this->loadCache();
+        return $this->libraryPaths;
+    }
+
+    /**
+     * Odstraní knihovnu z registrovaných cest
+     */
+    public function removeLib(string $namespace): void {
+        $this->loadCache();
+        unset($this->libraryPaths[$namespace]);
+        $this->saveCache();
+    }
+
+    /**
+     * Debug metoda - ukáže kde hledá soubor pro danou třídu
+     */
+    public function debugClass(string $class): array {
+        $this->loadCache();
+        $debug = [
+            'class' => $class,
+            'in_cache' => isset($this->classMap[$class]),
+            'library_attempts' => []
+        ];
+        
+        foreach ($this->libraryPaths as $namespace => $basePath) {
+            if (strpos($class, $namespace . '\\') === 0) {
+                $relativePath = $class;//substr($class, strlen($namespace) + 1);
+                $filePath = str_replace('\\', DIRECTORY_SEPARATOR, $relativePath) . '.php';
+                $fullPath = $basePath . DIRECTORY_SEPARATOR . $filePath;
+                
+                $debug['library_attempts'][] = [
+                    'namespace' => $namespace,
+                    'path' => $fullPath,
+                    'exists' => file_exists($fullPath)
+                ];
+            }
+        }
+        
+        $standardPath = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class) . '.php');
+        $debug['standard_path'] = [
+            'path' => $standardPath,
+            'exists' => file_exists($standardPath)
+        ];
+        
+        return $debug;
     }
 }
 
@@ -442,6 +561,14 @@ class Utilities {
 			return false;
 		}
 	}
+
+    public static function roundToDecimal(float $number, int $decimals = 2): float {
+        if ($decimals < 0) {
+            throw new InvalidArgumentException("Number of decimals must be non-negative.");
+        }
+        $factor = pow(10, $decimals);
+        return round($number * $factor) / $factor;
+    }
 }
 
 class Date {
@@ -601,7 +728,7 @@ class Paginator {
         ], $options);
 
         $this->urlPattern = $this->processUrlPattern($urlPattern);
-        $this->currentPage = $this->options['currentPage'] == null? $this->getCurrentPage(): intval($this->options['currentPage']);
+        $this->currentPage = $this->getCurrentPage();
     }
 
     private function processUrlPattern(string $url): string {
@@ -627,7 +754,7 @@ class Paginator {
     }
 
     public function getCurrentPage(): int {
-        $page = $_GET[$this->options['pageParam']] ?? 1;
+        $page = $this->options['currentPage'] == null? ($_GET[$this->options['pageParam']] ?? 1): intval($this->options['currentPage']);
         return max(1, min((int)$page, $this->getTotalPages()));
     }
 
@@ -758,7 +885,7 @@ class Paginator {
             );
         }
 
-        $html[] = sprintf('<nav><ul class="%s">', $this->options['containerClass']);
+        $html[] = sprintf('<nav class="%s"><ul>', $this->options['containerClass']);
 
         if (!$this->options["totalOutside"] && $this->options['showTotal'] && $this->options['totalPosition'] !== 'right') {
             $html[] = sprintf(
@@ -940,7 +1067,7 @@ class Container {
         $containerParamsCount = 0;
         for ($i = count($params) - 1; $i >= 0; $i--) {
             $param = $params[$i];
-            $type = $param->getType();            
+            $type = $param->getType();      
             if ($type && !$type->isBuiltin() && isset($this->services[$type->getName()])) {
                 $containerParamsCount++;
             } else {
@@ -948,7 +1075,7 @@ class Container {
             }
         }
                 
-        $manualArgsCount = $containerParamsCount - count($args);
+        $manualArgsCount = count($params) - $containerParamsCount;
         if ($manualArgsCount < 0) {
             throw new Exception("Too few arguments were passed.");
         }
@@ -997,6 +1124,7 @@ class Router {
     private string $baseUrl;
     private string $cacheFile = 'routes.cache.json';
     private array $controllers = [];
+    private array $procesed = [];
 
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
@@ -1185,17 +1313,22 @@ class Router {
 
         foreach ($this->routes as $key => $route) {
             if ($this->matchRoute($url, $route, $key)) {
-                $matchedRoute = $this->routes[$key];                
+                $matchedRoute = $this->routes[$key];      
+                $this->procesed[] = "Match route: $url, $key";
                 
-                if (is_callable($matchedRoute['handler'])) {                    
+                if (is_callable($matchedRoute['handler'])) {       
+                    $this->procesed[] = "Called by callable handler";
                     call_user_func($matchedRoute['handler'], $matchedRoute['variables'] ?? []);
                     return;
                 } else if (is_array($matchedRoute['handler'])) {
+                    $this->procesed[] = "Called by array handler";
                     $this->processVariables($matchedRoute['variables']);
                     $this->callController($matchedRoute['handler'], $matchedRoute['variables']);
                 } else if ($matchedRoute['redirect']) {
+                    $this->procesed[] = "Called by redirect";
                     $this->redirect($matchedRoute['handler']);
                 } else {
+                    $this->procesed[] = "Called by other";
                     $this->processRouteHandler($matchedRoute, $key);
                 }
                 break;
@@ -1292,16 +1425,19 @@ class Router {
                     throw new Exception("Missing value for parameter '$name' of method $method in class $class");
                 }
             }
-                    
+             
+            if($this->needAuthentification($reflectionMethod)){                
+                $this->redirectToLoginIfNeeded();
+            }
+
             $resultModel = $reflectionMethod->invokeArgs($instance, $resolvedParams);
             if($resultModel == null) {
                 throw new ControllerReturnedNullException($reflectionMethod->class, $reflectionMethod->name);
             }
-
-            if($this->needAuthentification($reflectionMethod)){                
-                $this->redirectToLoginIfNeeded();
-            }
     
+            foreach($methodsToRedirect as $mtr){
+                $this->procesed[] = "--> $mtr";
+            }
             $this->controllerData = $resultModel;
             break;
         }
@@ -1492,6 +1628,11 @@ class Router {
 
     public function dump(): void {
         echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl) . '</div>';
+        echo "<div style='padding:7px;'>";
+        foreach($this->procesed as $p) {
+            echo "<div>$p</div>";
+        }
+        echo "</div>";
         echo '<table style="width:100%; border-collapse:collapse; table-layout:fixed;">';
         echo '<tr style="border:1px solid black;">
                 <th style="width:60px;">Status</th>
@@ -1835,8 +1976,9 @@ class TemplaterV2 {
 						continue;
 					}
 
-                    $elementParameter = $token;
-                    $this->eat(TokenType::$TEXT);
+                    //$elementParameter = $token;
+                    $elementParameter = $this->consumeElementParameter($token);
+                    //$this->eat(TokenType::$TEXT);
 
                     if($params != "") $params.=" ";
 					$paramName = trim($elementParameter["value"]);
@@ -1898,6 +2040,47 @@ class TemplaterV2 {
                 $this->printOutputText($token);
             } 
         }
+    }
+
+    private function consumeElementParameter($token) {
+        $value = $token["value"];
+        $this->eat();
+        
+        while(true) {
+            $next = $this->getToken();
+            
+            if($next["type"] == TokenType::$GREAT_THEN || 
+            $next["type"] == TokenType::$ASSIGN || 
+            $next["type"] == TokenType::$SLASH ||
+            $next["type"] == TokenType::$NEW_LINE ||
+            $next["type"] == TokenType::$EOF ||
+            $next["type"] == $this->controllTokensDefinition[0]) {
+                break;
+            }
+            
+            if(trim($next["value"]) == "" && $next["type"] != TokenType::$TEXT) {
+                break;
+            }
+            
+            if($next["type"] == TokenType::$TEXT) {
+                $value .= $next["value"];
+                $this->eat();
+            } else {
+                $specialChars = ['.', ':', '-', '@'];
+                if(in_array($next["value"], $specialChars)) {
+                    $value .= $next["value"];
+                    $this->eat();
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        return [
+            "type" => TokenType::$TEXT,
+            "value" => $value,
+            "info" => $token["info"]
+        ];
     }
 
     private function parseControllTokens($controllTokens){
@@ -2920,7 +3103,7 @@ abstract class Model {
             $docComment = $method->getDocComment();
             if (!$docComment) continue;
 
-            //TODO: add support for fecthAll now it will return query builder
+            // hasMany - foreign key je v cílové tabulce
             if (preg_match('/@hasMany\("([^"]+)"\s*,\s*"?([^"]*)"?\)/', $docComment, $matches)) {
                 $relationships[$method->getName()] = [
                     'type' => 'hasMany',
@@ -2928,11 +3111,28 @@ abstract class Model {
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
                 ];
             }
-            else if (preg_match('/@(hasOne|belongsTo)\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+            // belongsTo - foreign key je v aktuální tabulce
+            else if (preg_match('/@belongsTo\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
                 $relationships[$method->getName()] = [
                     'type' => 'belongsTo',
-                    'class' => $matches[2],
-                    'foreignKey' => !empty($matches[3]) ? $matches[3] : strtolower($matches[2]) . '_id'
+                    'class' => $matches[1],
+                    'foreignKey' => !empty($matches[2]) ? $matches[2] : 'id' //strtolower($matches[1]) . '_id'
+                ];
+            }
+            // hasOne - foreign key je v aktuální tabulce (jako User → Permission)
+            else if (preg_match('/@hasOne\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+                $relationships[$method->getName()] = [
+                    'type' => 'hasOne',
+                    'class' => $matches[1],
+                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower($matches[1]) . '_id'
+                ];
+            }
+            // hasOneInverse - foreign key je v cílové tabulce (jako Manifest → DailyStat)
+            else if (preg_match('/@hasOneInverse\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
+                $relationships[$method->getName()] = [
+                    'type' => 'hasOneInverse',
+                    'class' => $matches[1],
+                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
                 ];
             }
         }
@@ -2959,14 +3159,30 @@ abstract class Model {
             
             $result = (new $className)
                 ->where([$foreignKey => $this->{$this->primaryKey}]);
-                //->fetchAll();
+            return $result; // Return QueryBuilder for hasMany relation, because it can be used for further chaining
+        }
+        else if ($relation['type'] === 'hasOne') {
+            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
+            if (!isset($this->{$foreignKey})) {
+                throw new Exception("Foreign key $foreignKey is not set in " . get_class($this)." for relation $method");
+            }
+            $foreignValue = $this->{$foreignKey};
+            $className = "Models\\". $relation['class'];
+
+            $result = $foreignValue ? ($className)::findById($foreignValue) : null;
+        }
+        else if ($relation['type'] === 'hasOneInverse') {
+            $foreignKey = isset($this->mappings[$relation['foreignKey']])? $this->mappings[$relation['foreignKey']]: $relation['foreignKey'];
+            $className = "Models\\". $relation['class'];
+            
+            $result = ($className)::where([$foreignKey => $this->{$this->primaryKey}])->fetch();
         }
         else if ($relation['type'] === 'belongsTo') {
             $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
             $foreignValue = $this->{$foreignKey};
             $className = "Models\\". $relation['class'];
 
-            $result = $foreignValue ? ($className)::findById($foreignValue) : null;
+            $result = $foreignValue ? ($className)::where(["id" => $foreignValue])->fetch() : null;
         }
 
         $this->relationCache[$method] = $result;
@@ -3591,12 +3807,16 @@ if(defined("USE_USERS")) {
             $user = Models\User::find($login, $login);
 
             if($user == null) return UserServiceLogin::WrongLogin;
-            if($user->password != sha1($password)) return UserServiceLogin::WrongPassword;
+            if($user->password != $this->hashPassword($password)) return UserServiceLogin::WrongPassword;
 
             $auth = $this->authentificatorProvider->get();
             $auth->authenticate($user->id);
 
             return UserServiceLogin::Ok;
+        }
+
+        public function hashPassword(string $password): string {
+            return sha1($password);
         }
 
         public function logout() {
@@ -3608,6 +3828,16 @@ if(defined("USE_USERS")) {
             if(!$this->isAuthentificated()) return null;
             $auth = $this->authentificatorProvider->get();
             return Models\User::findById($auth->getValue());
+        }
+
+        public function changePassword(string $password): bool {
+            if(!$this->isAuthentificated()) return false;
+
+            $user = $this->current();
+            $user->password = $this->hashPassword($password);
+            $user->save();
+
+            return true;
         }
     }
 }
@@ -4086,7 +4316,7 @@ class Controller {
         return isset($backtrace[$back]['function']) ? $backtrace[$back]['function'] : null;
     }
 
-    protected function view($name, $model = null, $clearContent = false): ControllerAction {
+    protected function view($name = null, $model = null, $clearContent = false): ControllerAction {
         $className = get_class($this);
         $callerFunction = $this->getNameOfCaller();
 
@@ -4098,7 +4328,7 @@ class Controller {
         return ControllerAction::makeViewModel($className, $name, $model, $clearContent);
     }
 
-    protected function component($name, $model = null) {
+    protected function component($name = null, $model = null) {
         $callerFunction = $this->getNameOfCaller();
 
         if (($name === null || !is_string($name)) && $model === null && $callerFunction !== null) {
