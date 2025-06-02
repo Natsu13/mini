@@ -16,15 +16,14 @@ A very small and lightweight PHP Model-View-Controller (MVC) framework designed 
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://your-repository-url-here.com/project.git
+    git clone https://github.com/Natsu13/mini.git
     ```
-    Replace `https://your-repository-url-here.com/project.git` with the actual repository URL.
 
 2.  **Database Configuration:**
     *   Create a database in your MySQL/MariaDB server (e.g., `mini`).
     *   Update the database connection details in `index.php`. Specifically, modify the following line to match your database server, name, username, and password:
         ```php
-        $database->connect("127.0.0.1", "mini", "root", "");
+         $database->connect("127.0.0.1", "mini", "your_db_user", "your_db_password"); // Params: host, db_name, user, password. Use strong credentials for production.
         ```
     *   The framework can help generate table schemas from your model definitions. For example, to get the SQL for a `User` model (as seen in `index.php` for initial setup), you can use:
         ```php
