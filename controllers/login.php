@@ -74,14 +74,14 @@ class Login extends \Controller {
 
     public function resetPasswordPost(string $email) {
         if(empty($email)) {
-            return $this->view("reset_password", ["error" => "Email je povinný"]);
+            return $this->view("reset_password", ["error" => "Email is required"]);
         }
 
         $result = $this->userService->resetPassword($email);
         if($result === \UserServiceCheck::WrongEmail) {
-            return $this->view("reset_password", ["error" => "Tento email není registrován"]);
+            return $this->view("reset_password", ["error" => "This email is not registered"]);
         } else if($result === \UserServiceCheck::EmailInvalid) {
-            return $this->view("reset_password", ["error" => "Email není zadán ve správném tvaru"]);
+            return $this->view("reset_password", ["error" => "Email is not entered in the correct format"]);
         }
 
         return $this->view("reset_password", ["success" => true]);
@@ -95,7 +95,7 @@ class Login extends \Controller {
     public function resetPasswordConfirm(string $token) {
         $ticket = $this->userService->checkResetPasswordTicket($token, $user, $ticket);
         if($ticket === \UserServiceCheck::WrongToken) {
-            return $this->view("reset_password_ticket", ["error" => "Neplatný token"]);
+            return $this->view("reset_password_ticket", ["error" => "Invalid token"]);
         }
 
         return $this->view("reset_password_ticket", ["token" => $token, "user" => $user]);
@@ -103,15 +103,15 @@ class Login extends \Controller {
 
     public function resetPasswordConfirmSave(string $token, string $password, string $confirm_password) {
         if(empty($password) || empty($confirm_password)) {
-            return $this->view("reset_password_ticket", ["error" => "Obě pole jsou povinná", "token" => $token]);
+            return $this->view("reset_password_ticket", ["error" => "Both fields are required", "token" => $token]);
         }
         if($password != $confirm_password) {
-            return $this->view("reset_password_ticket", ["error" => "Hesla se neschodují", "token" => $token]);
+            return $this->view("reset_password_ticket", ["error" => "Passwords don't match", "token" => $token]);
         }
 
         $result = $this->userService->changePasswordByTicket($token, $password);
         if($result === \UserServiceCheck::WrongToken) {
-            return $this->view("reset_password_ticket", ["error" => "Neplatný token", "token" => $token]);
+            return $this->view("reset_password_ticket", ["error" => "Invalid token", "token" => $token]);
         }
 
         return $this->view("reset_password_ticket", ["success" => true]);
