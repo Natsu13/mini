@@ -146,13 +146,13 @@ class Autoload {
                 if (file_exists($file)) {
                     require_once $file;
                     $this->loadedFiles[] = $file;
+                    return;
                 } else {
                     // Soubor neexistuje, odebereme ho z cache
                     unset($this->classMap[$class]);
                     $this->saveCache();
                 }
-            }
-            return;
+            }            
         }
 
         // Nejprve zkusíme najít soubor pomocí registrovaných knihoven
@@ -1136,7 +1136,7 @@ class Router {
         $this->layout = $layout;
         $this->request = $request;
         $this->authenticationProvider = $authenticationProvider;
-        $this->controllers = glob("Controllers/*.php");
+        $this->controllers = glob("controllers/*.php");
 
         $this->loadRoutes();
     }
@@ -1477,7 +1477,7 @@ class Router {
         if($allowAnonymous) return false;
 
         $docComment = $reflectionMethod->getDocComment();
-        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {            
+        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {
             if($name == "allowanonymous") {                
                 $allowAnonymous = true;
             }
@@ -3728,6 +3728,8 @@ if(defined("USE_USERS")) {
         case EmailInvalid;
         case LoginExists;
         case PasswordBad;    
+        case WrongEmail;
+        case WrongToken;
         case Unknown;
     }
 
@@ -3839,6 +3841,111 @@ if(defined("USE_USERS")) {
 
             return true;
         }
+
+        public function resetPassword(string $email): UserServiceCheck {
+            if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
+
+            $user = Models\User::findByEmail($email);
+            if($user == null) return UserServiceCheck::WrongEmail;
+
+            $ticket = TicketService::createTicket(Models\TicketType::PasswordReset, $user->id, $email);
+            
+            EmailService::send(
+                $email,
+                "Password recovery",
+                "<p>Hello, someone probably asked you to reset your password, you can do so at this <a href='".Router::url()."/password-reset-ticket/".$ticket->token."/'>link</a></p>");
+
+            return UserServiceCheck::Ok;
+        }
+
+        public function checkResetPasswordTicket(string $token, ?Models\User &$user, ?Models\Ticket &$ticket): UserServiceCheck {
+            $ticket = TicketService::findByToken($token);
+            if($ticket == null) return UserServiceCheck::WrongToken;
+            if($ticket->type->value != Models\TicketType::PasswordReset->value) return UserServiceCheck::WrongToken;
+
+            $user = Models\User::findById($ticket->entityId);
+            if($user == null) return UserServiceCheck::WrongToken;
+
+            return UserServiceCheck::Ok;
+        }
+
+        public function changePasswordByTicket(string $token, string $password): UserServiceCheck {            
+            $state = $this->checkResetPasswordTicket($token, $user, $ticket);
+            if($state != UserServiceCheck::Ok) {
+                return $state;
+            }
+
+            $user->password = $this->hashPassword($password);
+            $user->save();
+
+            // Mark ticket used after successful password reset
+            $ticket->markUsed();
+
+            return UserServiceCheck::Ok;
+        }
+    }
+}
+
+class TicketService {
+    public static function createTicket(Models\TicketType $type, ?int $entityId = null, ?string $data = null): Models\Ticket {
+        $ticket = new Models\Ticket();
+        $ticket->token = Utilities::random(10);
+        $ticket->type = $type;
+        $ticket->entityId = $entityId;
+        $ticket->data = $data;
+        $ticket->save();
+
+        return $ticket;
+    }
+
+    public static function findByToken(string $token): ?Models\Ticket {
+        return Models\Ticket::where(["token" => $token])->fetch();
+    }
+}
+
+class EmailService {
+    public static function send(string $to, string $subject, string $message, ?string $fromEmail = null, ?string $fromName = null): bool {
+        if (empty($to) || empty($subject) || empty($message)) {
+            throw new Exception("EmailService: Missing parameters.");
+        }
+        
+        $encodedSubject = '=?utf-8?B?' . base64_encode($subject) . '?=';
+
+        if(empty($fromEmail)) {
+            $fromEmail = "no-reply@" . $_SERVER['HTTP_HOST'];
+        }
+        if(empty($fromName)) {
+            $fromName = $_SERVER['HTTP_HOST'];
+        }
+
+        $headers = "From: {$fromName} <{$fromEmail}>\r\n";
+        $headers .= "Reply-To: {$fromEmail}\r\n";
+        $headers .= "Content-type: text/html; charset=UTF-8\r\n";
+        $headers .= "X-Mailer: PHP/" . phpversion();
+
+        if (defined("DEBUG") && DEBUG) {
+            return self::saveToFile($to, $encodedSubject, $message, $headers);
+        }
+
+        return mail($to, $encodedSubject, $message, $headers);
+    }
+
+    private static function saveToFile(string $to, string $subject, string $message, string $headers): bool{
+        $folder = ROOT . '/emails';
+
+        if (!is_dir($folder)) {
+            if (!mkdir($folder, 0777, true)) {
+                error_log("Unable to create a folder for debug emails.");
+                return false;
+            }
+        }
+
+        $timestamp = date('Y-m-d_H-i-s');
+        $filename = $folder . "/email_{$timestamp}_" . uniqid() . ".html";
+
+        $content = "To: {$to}<br/>Subject: {$subject}<br/>{$headers}<br/><br/>{$message}";
+
+        return file_put_contents($filename, $content) !== false;
     }
 }
 
