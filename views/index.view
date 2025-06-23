@@ -50,29 +50,31 @@ Email: {$model["user"]->email} <a href="{~/logout/}">Logout</a>
 <hr/>
 {^$model["api2"]}
 <hr/>
+
+<!-- Here are some html comment... -->
 <textarea style="width: 100%; height: 200px;">{$model["sql"]}</textarea>
 
 <style>
     /* Paginator */
-    ul.pagination { padding: 0; margin: 0; }
-    ul.pagination li:not(.page-text) { 
+    nav.pagination ul { padding: 0; margin: 0; }
+    nav.pagination li:not(.page-text) { 
         display: inline-block;
         border: 1px solid silver;
         margin: 3px;
         border-radius: 3px; 
     }
-    ul.pagination li:not(.page-text):not(.active):hover { 
+    nav.pagination li:not(.page-text):not(.active):hover { 
         background: #ebebeb;
     }
-    ul.pagination li.active {
+    nav.pagination li.active {
         background: #dddddd;
         border-color: #dddddd;  
     }
-    ul.pagination li.page-text {
+    nav.pagination li.page-text {
         display: inline-block;
         margin: 3px;
     }
-    ul.pagination li a {
+    nav.pagination li a {
         text-decoration: none;
         color: black;
         padding: 5px 10px;

@@ -1222,11 +1222,13 @@ class Router {
                             DocParser::parse($docComment, function (string $annotation, array $arguments) use ($controllerClass, $method, &$routes) {
                                 if ($annotation === 'route' && !empty($arguments)) {
                                     $route = $arguments[0];
-                                       
+                                    $priority = isset($arguments[1]) ? (int)$arguments[1] : 0;
+                                    
                                     $routes[] = [
                                         'route' => $route,
                                         'controller' => $controllerClass,
-                                        'method' => $method->getName()
+                                        'method' => $method->getName(),
+                                        'priority' => $priority
                                     ];
                                 }
                             });
@@ -1235,6 +1237,21 @@ class Router {
                 }
             }
         }
+
+        usort($routes, function($a, $b) {
+            $priorityComparison = $b['priority'] <=> $a['priority'];
+            if ($priorityComparison !== 0) {
+                return $priorityComparison;
+            }
+            
+            $routeA = preg_replace('/\[.*?\]/', '', $a['route']);
+            $routeB = preg_replace('/\[.*?\]/', '', $b['route']);
+            
+            $segmentsA = count(array_filter(explode('/', trim($routeA, '/')), 'strlen'));
+            $segmentsB = count(array_filter(explode('/', trim($routeB, '/')), 'strlen'));
+            
+            return $segmentsA <=> $segmentsB;
+        });
 
         return $routes;
     }
@@ -1830,6 +1847,7 @@ class TemplaterV2 {
 	private $safeBreakTokenCounter = 30;
 	private $lastDebugMessage = "";
 	private $openControllTokens = [];
+    private $printHtmlComments = true;
 
     public function __construct($content, $fileName = "inline"){
 		if($this->controllTokensDefinition == null) {
@@ -1925,6 +1943,25 @@ class TemplaterV2 {
         return $this->getToken($i);
     }
 
+    private function tryEatHtmlComment(){
+        $content = "";
+        $next = $this->getToken(0);
+        if($next["value"] == "!--") {
+            $this->eat(TokenType::$TEXT);
+            while($this->getToken(0)["type"] != TemplaterBuildEnd::$EOF && $this->getToken(0)["value"] != "--" && $this->getToken(1)["value"] != ">") {
+                $content.= $this->getToken(0)["value"];
+                $this->eat();
+            }
+            $this->eat();
+            $this->eat();
+            if($this->printHtmlComments) {
+                $this->printOutput("<!-- ".trim($content)." -->");
+            }
+            return true;
+        }         
+        return false;
+    }
+
     /*
     * This function will go and recursive build output
     */
@@ -1953,8 +1990,11 @@ class TemplaterV2 {
 				$this->printOutput($token["value"]);				
 				continue;
 			}
-            
+                        
             if($token["type"] == TokenType::$LESS_THEN) {
+                if($this->tryEatHtmlComment()) {
+                    continue;
+                }
                 //<div>
                 $token = $this->eat(TokenType::$TEXT);
                 $elementToken = $token;
@@ -3052,6 +3092,11 @@ abstract class Model {
                     }
                 }
                 
+                // Převod boolean hodnot na integer pro MySQL
+                if (is_bool($value)) {
+                    $value = (int)$value; // false -> 0, true -> 1
+                }
+                
                 if (is_string($value) && isset($this->columnsDefinition[$column]['length'])) {
                     $maxLength = $this->columnsDefinition[$column]['length'];
                     if ($maxLength !== null && mb_strlen($value) > $maxLength) {
@@ -3325,7 +3370,7 @@ abstract class Model {
                 continue;
             }
                                             
-            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {                                                      
+            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {       
                 $relatedClass = $match[1];
                 if(!isset($relationTables[$relatedClass])) {
                     $docComment = new ReflectionClass("\\Models\\".$relatedClass);                    
@@ -3338,17 +3383,25 @@ abstract class Model {
                     $relatedClass = $relationTables[$relatedClass];
                 }                
 
-                $foreignKeyColumn = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';
-                if (isset($definedColumns[$foreignKeyColumn])) {
-                    if (!isset($keysAdded[$foreignKeyColumn])) {
-                        $indexName = preg_replace('/_id$/', '', $foreignKeyColumn);
+                if(isset($match[3]) && $match[3] != null) {
+                    $foreignKeyColumn = $match[3];
+                    $isForeign = true;
+                } else {
+                    $foreignKeyColumn = "id";
+                    $isForeign = false;
+                }
+                $localTableKey = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';  
+
+                if (isset($definedColumns[$localTableKey]) || $isForeign) {
+                    if (!isset($keysAdded[$localTableKey])) {
+                        $indexName = preg_replace('/_id$/', '', $localTableKey);
                         if ($indexName === "") {
-                            $indexName = $foreignKeyColumn;
+                            $indexName = $localTableKey;
                         }
-                        $keys[] = "KEY `{$indexName}` (`{$foreignKeyColumn}`)";
-                        $keysAdded[$foreignKeyColumn] = true;
+                        $keys[] = "KEY `{$indexName}` (`{$localTableKey}`)";
+                        $keysAdded[$localTableKey] = true;
                     }
-                    $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$foreignKeyColumn}` FOREIGN KEY (`{$foreignKeyColumn}`) REFERENCES `" . strtolower($relatedClass) . "` (`id`) ON DELETE NO ACTION ON UPDATE NO ACTION";
+                    $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$localTableKey}` FOREIGN KEY (`{$localTableKey}`) REFERENCES `" . strtolower($relatedClass) . "` (`".$foreignKeyColumn."`) ON DELETE NO ACTION ON UPDATE NO ACTION";
                 }
             }
         }
@@ -3805,11 +3858,17 @@ if(defined("USE_USERS")) {
             return false;
         }
 
-        public function login(string $login, string $password): UserServiceLogin {
+        public function login(string $login, string $password, ?callable $callback = null): UserServiceLogin | string {
             $user = Models\User::find($login, $login);
 
             if($user == null) return UserServiceLogin::WrongLogin;
             if($user->password != $this->hashPassword($password)) return UserServiceLogin::WrongPassword;
+            if($callback != null) {
+                $result = $callback($user);
+                if($result !== true) {
+                    return $result;
+                }
+            }
 
             $auth = $this->authentificatorProvider->get();
             $auth->authenticate($user->id);
