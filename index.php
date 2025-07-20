@@ -1,5 +1,5 @@
 <?php
-//define("DEBUG", true);
+define("DEBUG", true);
 require_once "./library.php";
 
 ob_start();

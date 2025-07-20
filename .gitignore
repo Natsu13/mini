@@ -2,3 +2,4 @@
 /temp
 routes.cache.json
 autoload.cache.json
+/errors

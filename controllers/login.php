@@ -18,6 +18,7 @@ class Login extends \Controller {
      * @POST ::login
      */
     public function index(?string $back = null) {
+        new NotWork();
         return $this->View("index", ["back" => $back]);
     }
 

@@ -1,5 +1,6 @@
 <?php
 define("USE_USERS", 1);
+define("USE_EXCEPTION_HANDLER", 1);
 
 if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
@@ -4669,6 +4670,392 @@ class CookieAuthentication implements AuthenticationMethod {
     }
 }
 
+if(defined("USE_EXCEPTION_HANDLER")) {
+    class GlobalErrorHandler {
+        private string $errorDir;
+        private bool $displayErrors;
+        private string $vscodeProtocol;
+        private ?int $maxLogFiles; // Max number of log files to keep
+
+        public function __construct(string $errorDir = './errors', bool $displayErrors = true, string $vscodeProtocol = 'vscode://file', int $maxLogFiles = 100) {
+            $this->errorDir = rtrim($errorDir, '/');
+            if (defined("DEBUG") && DEBUG) {
+                $this->displayErrors = $displayErrors;
+            }else{
+                $this->displayErrors = false; // Don't display errors in production
+            }
+            $this->vscodeProtocol = $vscodeProtocol;
+            $this->maxLogFiles = $maxLogFiles;
+            
+            // Vytvoř složku pro chyby pokud neexistuje
+            if (!is_dir($this->errorDir)) {
+                mkdir($this->errorDir, 0755, true);
+            }
+
+            $this->rotateLogs();
+        }
+
+        private function rotateLogs(): void {
+            $files = glob($this->errorDir . '/*.json');
+            
+            if (empty($files)) {
+                return;
+            }
+            
+            usort($files, function($a, $b) {
+                return filemtime($a) - filemtime($b);
+            });
+            
+            $maxFiles = $this->maxLogFiles ?? 100;
+            $filesToDelete = count($files) - $maxFiles;
+            
+            if ($filesToDelete > 0) {
+                for ($i = 0; $i < $filesToDelete; $i++) {
+                    if (file_exists($files[$i])) {
+                        unlink($files[$i]);
+                    }
+                }
+            }
+        }
+
+        public function setErrorDir(string $errorDir): void {
+            $this->errorDir = rtrim($errorDir, '/');
+            if (!is_dir($this->errorDir)) {
+                mkdir($this->errorDir, 0755, true);
+            }
+        }
+
+        public function setDisplayErrors(bool $displayErrors): void {
+            $this->displayErrors = $displayErrors;
+        }
+
+        public function setVscodeProtocol(string $vscodeProtocol): void {
+            $this->vscodeProtocol = rtrim($vscodeProtocol, '/');
+        }
+
+        public function register(): void {
+            set_error_handler([$this, 'handleError']);
+            set_exception_handler([$this, 'handleException']);
+            register_shutdown_function([$this, 'handleFatalError']);
+        }
+
+        public function handleError(int $errno, string $errstr, string $errfile, int $errline): bool {
+            $this->handleException(new ErrorException($errstr, 0, $errno, $errfile, $errline));
+            return true;
+        }
+
+        public function handleException(Throwable $exception): void {
+            $errorData = $this->prepareErrorData($exception);
+            $this->logError($errorData);
+            
+            if ($this->displayErrors) {
+                $this->displayErrorPage($errorData);
+            } else {
+                http_response_code(500);
+                echo "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>An error occurred</title><style>*{font-family:Arial;}</style>";
+                echo "<div style='margin: 30px 50px;'>";
+                    echo "<h1>An error occurred</h1>";
+                    echo "<p>Sorry, an error occurred while processing your request.</p>";
+                    echo "<p>You can share this code <b>".$errorData['id']."</b> with developers so they can fix this problem</p>";
+                    echo "<p style='font-size: 13px;'>Error occurrence date <b>".Date::toString(time(), false)."</b></p>";
+                echo "</div>";
+            }
+        }
+
+        public function handleFatalError(): void {
+            $error = error_get_last();
+            
+            if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+                $exception = new ErrorException(
+                    $error['message'],
+                    0,
+                    $error['type'],
+                    $error['file'],
+                    $error['line']
+                );
+                
+                $errorData = $this->prepareErrorData($exception);
+                $this->logError($errorData);
+                
+                if ($this->displayErrors) {
+                    $this->displayErrorPage($errorData);
+                }
+            }
+        }
+
+        private function prepareErrorData(Throwable $exception): array {
+            return [
+                'id' => uniqid('error_', true),
+                'timestamp' => date('Y-m-d H:i:s'),
+                'type' => get_class($exception),
+                'message' => $exception->getMessage(),
+                'file' => $exception->getFile(),
+                'line' => $exception->getLine(),
+                'trace' => $exception->getTrace(), // Použijeme strukturovaný trace
+                'trace_string' => $exception->getTraceAsString(),
+                'code' => $exception->getCode(),
+                'request_uri' => $_SERVER['REQUEST_URI'] ?? 'CLI',
+                'method' => $_SERVER['REQUEST_METHOD'] ?? 'CLI',
+                'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'CLI',
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? 'localhost'
+            ];
+        }
+
+        private function logError(array $errorData): void {
+            $filename = $this->errorDir . '/' . $errorData['id'] . '.json';
+            file_put_contents($filename, json_encode($errorData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            error_log("Error {$errorData['id']}: {$errorData['message']} in {$errorData['file']}:{$errorData['line']}");
+        }
+
+        private function displayErrorPage(array $errorData): void {
+            if (ob_get_level()) {
+                ob_clean();
+            }
+
+            http_response_code(500);
+            
+            $vscodeLink = $this->vscodeProtocol . '/' . $errorData['file'] . ':' . $errorData['line'];
+            $fileCode = $this->getFileContext($errorData['file'], $errorData['line']);
+            $stackTraceHtml = $this->getStackTraceHtml($errorData['trace']);
+            
+            echo $this->getErrorPageHtml($errorData, $vscodeLink, $fileCode, $stackTraceHtml);
+            exit;
+        }
+
+        private function getFileContext(string $file, int $line, int $contextLines = 5): array {
+            if (!file_exists($file)) {
+                return [];
+            }
+
+            $lines = file($file);
+            $start = max(0, $line - $contextLines - 1);
+            $end = min(count($lines), $line + $contextLines);
+            
+            $context = [];
+            for ($i = $start; $i < $end; $i++) {
+                $context[$i + 1] = [
+                    'number' => $i + 1,
+                    'code' => htmlspecialchars(rtrim($lines[$i])),
+                    'is_error' => ($i + 1) === $line
+                ];
+            }
+            
+            return $context;
+        }
+
+        private function getStackTraceHtml(array $trace): string {
+            $html = '';
+            $trace = array_slice($trace, 1);
+
+            foreach ($trace as $index => $step) {
+                $file = $step['file'] ?? 'unknown';
+                $line = $step['line'] ?? 0;
+                $function = $step['function'] ?? 'unknown';
+                $class = $step['class'] ?? '';
+                $type = $step['type'] ?? '';
+                
+                $functionCall = $class ? "{$class} {$type} {$function}" : $function;
+                $args = $this->formatArguments($step['args'] ?? []);
+                
+                $vscodeLink = $this->vscodeProtocol . '/' . $file . ':' . $line;
+                $fileShort = basename($file);
+                $dirPath = dirname($file);
+                
+                // Získej náhled kódu pro tento krok
+                $codePreview = '';
+                if ($file !== 'unknown' && file_exists($file)) {
+                    $codeContext = $this->getFileContext($file, $line, 2);
+                    if (!empty($codeContext)) {
+                        $codePreview = "<div class='trace-code-preview'>";
+                        foreach ($codeContext as $contextLine) {
+                            $class = $contextLine['is_error'] ? 'preview-error-line' : '';
+                            $codePreview .= "<div class='preview-line {$class}'>";
+                            $codePreview .= "<span class='preview-line-number'>{$contextLine['number']}</span>";
+                            $codePreview .= "<span class='preview-line-code'>{$contextLine['code']}</span>";
+                            $codePreview .= "</div>";
+                        }
+                        $codePreview .= "</div>";
+                    }
+                }
+                
+                $html .= "
+                <div class='trace-step' data-step='{$index}'>
+                    <div class='trace-step-header'>
+                        <span class='trace-step-number'>#{$index}</span>
+                        <div class='trace-step-info'>
+                            <div class='trace-function'>
+                                <span class='function-name'>{$functionCall}</span>
+                                <span class='function-args'>({$args})</span>
+                            </div>
+                            <div class='trace-location'>
+                                " . ($file !== 'unknown' ? "
+                                <a href='{$vscodeLink}' class='file-link' title='Open in VS Code'>
+                                    <span class='file-path'>{$dirPath}/</span>
+                                    <span class='file-name'>{$fileShort}</span>
+                                    <span class='file-line'>:{$line}</span>
+                                </a>
+                                " : "<span class='file-unknown'>Unknown file</span>") . "
+                            </div>
+                        </div>
+                        <button class='trace-toggle' onclick='toggleTraceCode({$index})'>
+                            <span class='toggle-icon'>▼</span>
+                        </button>
+                    </div>
+                    <div class='trace-step-code' id='trace-code-{$index}' style='display: none;'>
+                        {$codePreview}
+                    </div>
+                </div>";
+            }
+            
+            return $html;
+        }
+
+        private function formatArguments(array $args): string {
+            $formatted = [];
+            
+            foreach ($args as $arg) {
+                if (is_string($arg)) {
+                    $formatted[] = "'" . (strlen($arg) > 50 ? substr($arg, 0, 50) . '...' : $arg) . "'";
+                } elseif (is_numeric($arg)) {
+                    $formatted[] = (string)$arg;
+                } elseif (is_bool($arg)) {
+                    $formatted[] = $arg ? 'true' : 'false';
+                } elseif (is_null($arg)) {
+                    $formatted[] = 'null';
+                } elseif (is_array($arg)) {
+                    $formatted[] = 'Array(' . count($arg) . ')';
+                } elseif (is_object($arg)) {
+                    $formatted[] = get_class($arg) . ' Object';
+                } else {
+                    $formatted[] = gettype($arg);
+                }
+            }
+            
+            return implode(', ', $formatted);
+        }
+
+        private function getErrorPageHtml(array $errorData, string $vscodeLink, array $fileCode, string $stackTraceHtml): string {
+            $codeHtml = '';
+            foreach ($fileCode as $lineData) {
+                $class = $lineData['is_error'] ? 'error-line' : '';
+                $codeHtml .= "<div class='code-line {$class}'>";
+                $codeHtml .= "<span class='line-number'>{$lineData['number']}</span>";
+                $codeHtml .= "<span class='line-code'>{$lineData['code']}</span>";
+                $codeHtml .= "</div>";
+            }
+
+            return "
+            <!DOCTYPE html>
+            <html lang='cs'>
+            <head>
+                <meta charset='UTF-8'>
+                <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+                <title>Application exception</title>
+                <style>
+                    .code-section,.info-section,.trace-section{border-left:4px solid #dc2626}.code-line,.preview-line{font-family:monospace;white-space:pre}
+                    .file-link,.vs-code-link,.vscode-link{text-decoration:none}*{margin:0;padding:0;box-sizing:border-box}
+                    body{font-family:Consolas,Monaco,'Courier New',monospace;background:#1a1a1a;color:#fff;line-height:1.6}.error-container{
+                    background:linear-gradient(135deg,#dc2626,#b91c1c);min-height:100vh;padding:20px}.error-content{margin:0 auto;background:rgba(0,0,0,.8);
+                    border-radius:2px;padding:10px 15px;box-shadow:0 20px 40px rgba(0,0,0,.3)}.error-header{border-bottom:2px solid #dc2626;padding-bottom:20px;
+                    margin-bottom:30px}.error-title{font-size:2em;color:#ef4444;margin-bottom:0;text-shadow:2px 2px 4px rgba(0,0,0,.5)}.error-subtitle{font-size:1.2em;
+                    color:#fca5a5;font-weight:300}.error-info{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-bottom:15px}.info-section{
+                    background:rgba(220,38,38,.1);padding:8px 10px;border-radius:2px}.info-title{color:#ef4444;font-size:1.1em;margin-bottom:15px;text-transform:uppercase;
+                    letter-spacing:1px}.info-item{margin-bottom:2px;display:flex}.info-label{color:#fca5a5;min-width:80px;margin-right:10px}.info-value{color:#fff;
+                    word-break:break-all}.vscode-link{display:inline-block;background:#007acc;color:#fff;padding:8px 16px;border-radius:4px;font-size:.9em;
+                    margin-top:10px;transition:background .3s}.vscode-link:hover{background:#005a9e}.code-section{background:rgba(0,0,0,.5);padding:8px 10px;
+                    border-radius:2px;margin-bottom:15px}.code-line{display:flex;margin-bottom:0;padding:2px 0}.code-line.error-line{background:rgba(220,38,38,.3);
+                    border-left:4px solid #ef4444;padding-left:0;margin-left:-4px}.trace-step-header:hover,.trace-toggle:hover{background:rgba(255,255,255,.1)}
+                    .line-number{color:#6b7280;min-width:40px;text-align:right;margin-right:15px;user-select:none}.line-code{color:#e5e7eb}.trace-section{
+                    background:rgba(0,0,0,.3);padding:20px;border-radius:2px}.trace-step{background:rgba(255,255,255,.05);border-radius:2px;margin-bottom:10px;
+                    border:1px solid rgba(220,38,38,.3);overflow:hidden}.trace-step-header{overflow: auto;display:flex;align-items:center;padding:12px 16px;cursor:pointer;
+                    transition:background .2s}.trace-step-number{background:#dc2626;color:#fff;padding:4px 8px;border-radius:4px;font-size:.8em;font-weight:700;
+                    min-width:30px;text-align:center;margin-right:15px}.function-args,.trace-location{font-size:.9em}.trace-step-info{flex:1}.trace-function{margin-bottom:0}
+                    .file-line,.function-name{color:#fbbf24;font-weight:700}.function-args{color:#9ca3af}.file-link{color:#60a5fa;display:inline-flex;align-items:center;
+                    transition:color .2s}.file-link:hover{color:#93c5fd;text-decoration:underline}.file-icon{margin-right:6px}.file-path{color:#9ca3af}.file-name{color:#e5e7eb;
+                    font-weight:500}.file-unknown{color:#6b7280;font-style:italic}.trace-toggle{background:0 0;border:none;color:#9ca3af;cursor:pointer;padding:5px;
+                    border-radius:3px;transition:.2s}.trace-toggle:hover{color:#e5e7eb}.toggle-icon{display:inline-block;transition:transform .2s}.toggle-icon.rotated{
+                    transform:rotate(-90deg)}.trace-step-code{overflow: auto;border-top:1px solid rgba(220,38,38,.3);background:rgba(0,0,0,.3)}.trace-code-preview{padding:0}
+                    .preview-line{display:flex;padding:3px 16px;font-size:.85em}.preview-line.preview-error-line{background:rgba(220,38,38,.2)}.preview-line-number{
+                    color:#6b7280;min-width:35px;text-align:right;margin-right:12px;user-select:none}.preview-line-code{color:#d1d5db}@media (max-width:768px){.error-info{
+                    grid-template-columns:1fr}.error-title{font-size:2em}}.vs-code-link{color:inherit;border-bottom:1px dashed #a7a7a7}.code-content{overflow: auto;.}
+                </style>
+                <script>
+                    function toggleTraceCode(e){const t=document.getElementById(\"trace-code-\"+e),o=document.querySelector('[data-step=\"'+e+'\"] .toggle-icon');\"none\"===t.style.display?(t.style.display=\"block\",o.classList.add(\"rotated\")):(t.style.display=\"none\",o.classList.remove(\"rotated\"))}document.addEventListener(\"DOMContentLoaded\",(function(){const e=document.getElementById(\"trace-code-0\"),t=document.querySelector('[data-step=\"0\"] .toggle-icon');e&&t&&(e.style.display=\"block\",t.classList.add(\"rotated\"))}));
+                </script>
+            </head>
+            <body>
+                <div class='error-container'>
+                    <div class='error-content'>
+                        <div class='error-header'>
+                            <h1 class='error-title'>Application error</h1>
+                            <p class='error-subtitle'>An unexpected error occurred while processing the request</p>
+                        </div>
+                        
+                        <div class='error-info'>
+                            <div class='info-section'>
+                                <h2 class='info-title'>Error details</h2>
+                                <div class='info-item'>
+                                    <span class='info-label'>Type</span>
+                                    <span class='info-value'>{$errorData['type']}</span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>Message</span>
+                                    <span class='info-value'>{$errorData['message']}</span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>File</span>
+                                    <span class='info-value'><a href='{$vscodeLink}' title='Open in VS Code' class='vs-code-link'>{$errorData['file']}</a></span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>Line</span>
+                                    <span class='info-value'>{$errorData['line']}</span>
+                                </div>
+                            </div>
+                            
+                            <div class='info-section'>
+                                <h2 class='info-title'>Context</h2>
+                                <div class='info-item'>
+                                    <span class='info-label'>ID</span>
+                                    <span class='info-value'>{$errorData['id']}</span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>Time</span>
+                                    <span class='info-value'>{$errorData['timestamp']}</span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>URL</span>
+                                    <span class='info-value'>{$errorData['request_uri']}</span>
+                                </div>
+                                <div class='info-item'>
+                                    <span class='info-label'>IP</span>
+                                    <span class='info-value'>{$errorData['ip']}</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        " . (!empty($fileCode) ? "
+                        <div class='code-section'>
+                            <h2 class='info-title'>Source code</h2>
+                            <div class='code-content'>
+                                {$codeHtml}
+                            </div>
+                        </div>
+                        " : "") . "
+                        
+                        <div class='trace-section'>
+                            <h2 class='info-title'>Stack Trace</h2>
+                            <div class='trace-content'>
+                                {$stackTraceHtml}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>";
+        }
+    }
+}
+
 if(!defined("CACHE")) {
     define("CACHE", 1);
 }
@@ -4685,6 +5072,11 @@ $container->setSingleton(AuthentificatorProvider::class);
 
 if(defined("USE_USERS")) {
     $container->setSingleton(UserService::class);
+}
+
+if(defined("USE_EXCEPTION_HANDLER")) {
+    $container->setSingleton(GlobalErrorHandler::class);
+    $container->get(GlobalErrorHandler::class)->register();
 }
 
 $container->get(Autoload::class)->register();
