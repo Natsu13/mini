@@ -1828,6 +1828,30 @@ class Layout {
 	}
 }
 
+class TemplaterV2Exception extends \Exception {
+    protected $col;
+    protected $row;
+
+    public function __construct($message, $file = null, $col = null, $row = null) {
+        parent::__construct($message);
+
+        if ($file !== null) {
+            $this->file = $file;
+        }
+
+        $this->col = $col;
+        $this->row = $row;
+    }
+
+    public function getCol() {
+        return $this->col;
+    }
+
+    public function getRow() {
+        return $this->row;
+    }
+}
+
 class TemplaterV2 {
     private $content = [];
 	private $fileName = "";
@@ -1899,7 +1923,8 @@ class TemplaterV2 {
 		}else{
 			$this->eatTokenSafeCounter++;
 			if($this->eatTokenSafeCounter > $this->safeBreakTokenCounter) {
-				throw new Exception("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
+				//throw new Exception("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
+                $this->throwException($token, "Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
 			}
 		}
 
@@ -1930,8 +1955,17 @@ class TemplaterV2 {
     private function assertToken($token, $condition, $message = "", $reportedOnly = false){        
         if(!$condition) {
 			if($message != "") $message = ", ".$message;
-            throw new Exception(($reportedOnly?"Reported token":"Unkown token")." type '".TokenType::print($token["type"])."' ".$this->printTokenInfo($token).$message."; File: " . $this->fileName."\n");
+            $this->throwException($token, ($reportedOnly?"Reported token":"Unkown token")." type '".TokenType::print($token["type"])."' ".$this->printTokenInfo($token).$message."; File: " . $this->fileName."\n");
 		}
+    }
+
+    private function throwException($token, $message) {
+        throw new TemplaterV2Exception(
+                $message,
+                $this->fileName,
+                $token["type"] != -1? $token["info"]["line"]["col"]: 0,
+                $token["type"] != -1? $token["info"]["line"]["row"]: 0
+            );
     }
 
     private function rollback(){
@@ -2237,7 +2271,9 @@ class TemplaterV2 {
 				$message.= "\n{".$t["type"]."} - ".$this->printTokenInfo($t["token"]);
 			}
 			$message.= "\nFile: " . $this->fileName;
-			throw new Exception($message."\n");
+            $lastToken = $this->openControllTokens[count($this->openControllTokens) - 1]["token"];
+			//throw new Exception($message."\n");
+            $this->throwException($lastToken, $message);
 		}
 	}
 
@@ -2471,7 +2507,8 @@ class TemplaterV2 {
 		$index = $this->outputCacheIndex;
 		$this->outputCacheIndex--;
 		if($this->outputCacheIndex < 0) {
-			throw new Exception("Output cache index is less than zero!");
+			//throw new Exception("Output cache index is less than zero!");
+            $this->throwException(["type" => TokenType::$EOF, "value" => ""], "Output cache index is less than zero!");
 		}
 		return $this->outputCache[$index];
 	}
@@ -4784,13 +4821,18 @@ if(defined("USE_EXCEPTION_HANDLER")) {
         }
 
         private function prepareErrorData(Throwable $exception): array {
+            $line = $exception->getLine();
+            if($exception instanceof TemplaterV2Exception) {
+                $line = $exception->getRow() + 1;
+            }
+
             return [
                 'id' => uniqid('error_', true),
                 'timestamp' => date('Y-m-d H:i:s'),
                 'type' => get_class($exception),
                 'message' => $exception->getMessage(),
                 'file' => $exception->getFile(),
-                'line' => $exception->getLine(),
+                'line' => $line,
                 'trace' => $exception->getTrace(), // Použijeme strukturovaný trace
                 'trace_string' => $exception->getTraceAsString(),
                 'code' => $exception->getCode(),
@@ -4823,7 +4865,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
         }
 
         private function getFileContext(string $file, int $line, int $contextLines = 5): array {
-            if (!file_exists($file)) {
+            if (!file_exists($file)) {                
                 return [];
             }
 
@@ -4839,7 +4881,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                     'is_error' => ($i + 1) === $line
                 ];
             }
-            
+                        
             return $context;
         }
 
@@ -4944,6 +4986,8 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                 $codeHtml .= "</div>";
             }
 
+            $errMessage = str_replace("\n", "<br/>", $errorData['message']);
+
             return "
             <!DOCTYPE html>
             <html lang='cs'>
@@ -4988,7 +5032,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                     <div class='error-content'>
                         <div class='error-header'>
                             <h1 class='error-title'>Application error</h1>
-                            <p class='error-subtitle'>An unexpected error occurred while processing the request</p>
+                            <p class='error-subtitle'><b>{$errorData['type']}</b>: {$errMessage}</p>
                         </div>
                         
                         <div class='error-info'>
@@ -5000,7 +5044,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                                 </div>
                                 <div class='info-item'>
                                     <span class='info-label'>Message</span>
-                                    <span class='info-value'>{$errorData['message']}</span>
+                                    <span class='info-value'>{$errMessage}</span>
                                 </div>
                                 <div class='info-item'>
                                     <span class='info-label'>File</span>
