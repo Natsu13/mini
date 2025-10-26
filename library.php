@@ -680,13 +680,13 @@ class Date {
     }
 
     /**
-     * @param string $datumText date in format j.n.Y H:i or specify by $format
+     * @param string $date date in format j.n.Y H:i or specify by $format
      * @param string $format format of the date
      */
-    public static function toTimestamp(string $datumText, string $format = 'j.n.Y H:i'): int {
-        $dt = DateTime::createFromFormat($format, $datumText);
+    public static function toTimestamp(string $date, string $format = 'j.n.Y H:i'): int {
+        $dt = DateTime::createFromFormat($format, $date);
         if (!$dt) {
-            throw new Exception("Invalid date format: $datumText");
+            throw new Exception("Invalid date format: $date");
         }
         return $dt->getTimestamp();
     }
@@ -1924,7 +1924,7 @@ class TemplaterV2 {
 			$this->eatTokenSafeCounter++;
 			if($this->eatTokenSafeCounter > $this->safeBreakTokenCounter) {
 				//throw new Exception("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
-                $this->throwException($token, "Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
+                $this->throwException("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token), $token);
 			}
 		}
 
@@ -1955,16 +1955,16 @@ class TemplaterV2 {
     private function assertToken($token, $condition, $message = "", $reportedOnly = false){        
         if(!$condition) {
 			if($message != "") $message = ", ".$message;
-            $this->throwException($token, ($reportedOnly?"Reported token":"Unkown token")." type '".TokenType::print($token["type"])."' ".$this->printTokenInfo($token).$message."; File: " . $this->fileName."\n");
+            $this->throwException(($reportedOnly?"Reported token":"Unkown token")." type '".TokenType::print($token["type"])."' ".$this->printTokenInfo($token).$message."; File: " . $this->fileName."\n", $token);
 		}
     }
 
-    private function throwException($token, $message) {
+    private function throwException($message, $token = null) {
         throw new TemplaterV2Exception(
                 $message,
                 $this->fileName,
-                $token["type"] != -1? $token["info"]["line"]["col"]: 0,
-                $token["type"] != -1? $token["info"]["line"]["row"]: 0
+                $token != null && $token["type"] != -1? $token["info"]["line"]["col"]: 0,
+                $token != null && $token["type"] != -1? $token["info"]["line"]["row"]: 0
             );
     }
 
@@ -2083,7 +2083,7 @@ class TemplaterV2 {
 
                 //check if this is />
 				$elementHasNoPair = in_array($elementType, $this->elementWithoutPair);
-                if($this->getToken()["type"] == TokenType::$SLASH || $elementHasNoPair) {                    
+                if($elementHasNoPair || $this->getToken()["type"] == TokenType::$SLASH) {                    
 					if($this->getToken()["type"] == TokenType::$SLASH)
                     	$this->eat(TokenType::$SLASH);
 						
@@ -2272,8 +2272,8 @@ class TemplaterV2 {
 			}
 			$message.= "\nFile: " . $this->fileName;
             $lastToken = $this->openControllTokens[count($this->openControllTokens) - 1]["token"];
-			//throw new Exception($message."\n");
-            $this->throwException($lastToken, $message);
+            
+            $this->throwException($message, $lastToken);
 		}
 	}
 
@@ -2508,7 +2508,7 @@ class TemplaterV2 {
 		$this->outputCacheIndex--;
 		if($this->outputCacheIndex < 0) {
 			//throw new Exception("Output cache index is less than zero!");
-            $this->throwException(["type" => TokenType::$EOF, "value" => ""], "Output cache index is less than zero!");
+            $this->throwException("Output cache index is less than zero!");
 		}
 		return $this->outputCache[$index];
 	}
@@ -2923,7 +2923,7 @@ abstract class Model {
                             if ($enumValue !== null) {
                                 $this->$propertyName = $enumValue;
                             } else {
-                                throw new \UnexpectedValueException("Neplatná hodnota '$value' pro enum $typeName");
+                                throw new \UnexpectedValueException("Invalid value '$value' for enum $typeName");
                             }
                             continue;
                         }
@@ -3865,7 +3865,7 @@ if(defined("USE_USERS")) {
             if($state == UserServiceCheck::Ok) {
                 $user = new Models\User();
                 $user->login = $login;
-                $user->password = sha1($password);
+                $user->password = $this->hashPassword($password);
                 $user->email = $email;
                 $user->permissionId = 1;
                 
