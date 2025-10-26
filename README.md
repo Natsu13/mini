@@ -65,6 +65,16 @@ A very small and lightweight PHP Model-View-Controller (MVC) framework designed 
             }
             ```
             Remember to replace placeholders like `yourdomain.com` and `/path/to/your/project` with your actual values. Reload or restart Nginx to apply the changes.
+        * Here is the **.htaccess** rewrited for **nginx**
+            ```nginx
+            location / {
+                try_files $uri $uri/ @htaccess_fallback;
+            }
+        
+            location @htaccess_fallback {
+                rewrite ^/(.*)$ /index.php?url=$1&$args last;
+            }
+            ```
 
 ## Key Features
 
