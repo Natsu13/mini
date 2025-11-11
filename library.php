@@ -1126,6 +1126,7 @@ enum Method {
     case POST;
     case PUT;
     case DELETE;    
+    case HEAD;
 }
 
 class Router {
@@ -1795,12 +1796,17 @@ class Layout {
 		}
 
 		//Remove old temp files
-		$timeMaxOld = date("Y-m-d", strtotime("-1 week"));
-		foreach (glob(ROOT."/temp/templates" . "/*.{*,*}", GLOB_BRACE) as $file) {
-			if (filemtime($file) < strtotime($timeMaxOld)) {
-				unlink($file);
-			}
-		}
+		$timeMaxOld = strtotime("-1 week");
+        foreach (glob(ROOT."/temp/templates/*") as $file) {
+            if (!is_file($file)) continue;
+
+            $mtime = @filemtime($file);
+            if ($mtime === false) continue;
+
+            if ($mtime < $timeMaxOld) {
+                @unlink($file);
+            }
+        }
 	}
 
     public function render($filename, $model = NULL, $onlycompile = false, &$outputFile = null): bool {		
@@ -4331,17 +4337,20 @@ class Request {
     }
 
     public function is(string | Method $type): bool {
+        $method = strtolower($_SERVER['REQUEST_METHOD']);
         if(is_string($type))
-            return strtolower($_SERVER['REQUEST_METHOD']) === trim(strtolower($type));
+            return $method === trim(strtolower($type));
         
         if($type == Method::GET)
-            return strtolower($_SERVER['REQUEST_METHOD']) === "get";
+            return $method === "get" || $method === "head"; //support for head/get
         if($type == Method::POST)
-            return strtolower($_SERVER['REQUEST_METHOD']) === "post";
+            return $method === "post";
         if($type == Method::PUT)
-            return strtolower($_SERVER['REQUEST_METHOD']) === "put";
+            return $method === "put";
         if($type == Method::DELETE)
-            return strtolower($_SERVER['REQUEST_METHOD']) === "delete";
+            return $method === "delete";
+        if($type == Method::HEAD)
+            return $method === "head";
 
         throw new Exception("Unknown method type = {$type->name}");
     }
@@ -4351,6 +4360,7 @@ class Request {
         if($this->is(Method::POST)) return Method::POST;
         if($this->is(Method::PUT)) return Method::PUT;
         if($this->is(Method::DELETE)) return Method::DELETE;
+        if($this->is(Method::HEAD)) return Method::HEAD;
 
         throw new Exception("Unknown method type");
     }
@@ -4361,6 +4371,10 @@ class Request {
 
     public function isJsonRequest(): bool {
         return (empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false) || $this->isAjax();
+    }
+
+    public function isHead(): bool {
+        return $this->is(Method::HEAD);
     }
 
     public function isSecure(): bool {
@@ -4793,6 +4807,14 @@ if(defined("USE_EXCEPTION_HANDLER")) {
         }
 
         public function handleError(int $errno, string $errstr, string $errfile, int $errline): bool {
+            if ($errno & (E_NOTICE | E_USER_NOTICE)) {
+                return false;
+            }
+
+            if ($errno & (E_WARNING | E_USER_WARNING)) {
+                return false;
+            }
+
             $this->handleException(new ErrorException($errstr, 0, $errno, $errfile, $errline));
             return true;
         }
