@@ -36,14 +36,12 @@ class Autoload {
     }
 
     private function saveCache(): void {
-        // Před zápisem znovu načteme cache pro zajištění konzistence
         $currentCache = [];
         if (file_exists($this->cacheFile)) {
             $content = file_get_contents($this->cacheFile);
             $currentCache = json_decode($content, true) ?? [];
         }
 
-        // Sloučíme aktuální cache s naší lokální kopií
         $mergedClassMap = array_merge($currentCache['classMap'] ?? [], $this->classMap);
         $mergedLibraryPaths = array_merge($currentCache['libraryPaths'] ?? [], $this->libraryPaths);
 
@@ -52,7 +50,6 @@ class Autoload {
             'libraryPaths' => $mergedLibraryPaths
         ];
 
-        // Pokusíme se o atomický zápis pomocí lock
         $lockFile = $this->cacheFile . '.lock';
         $lockHandle = fopen($lockFile, 'w');
         
@@ -91,20 +88,15 @@ class Autoload {
      * @param string $path Cesta ke knihovně (např. "libs/PhpSpreadsheet")
      */
     public function addLib(string $name, string $namespace = '', string $path = ''): void {
-        // Pokud není zadán namespace, použije se název knihovny
         if (empty($namespace)) {
             $namespace = $name;
         }
         
-        // Pokud není zadána cesta, použije se libs/{name}
         if (empty($path)) {
             $path = 'libs/' . $name;
         }
 
-        // Normalize namespace (odstraní leading/trailing backslashes)
         $namespace = trim($namespace, '\\');
-        
-        // Normalize path
         $path = rtrim($path, '/\\');
 
         $this->loadCache();
@@ -118,15 +110,10 @@ class Autoload {
     private function findFileForClass(string $class): ?string {
         foreach ($this->libraryPaths as $namespace => $basePath) {
             if (strpos($class, $namespace . '\\') === 0) {
-                // Odstraníme root namespace z názvu třídy
                 $relativePath = substr($class, strlen($namespace) + 1);
                 
-                // Převedeme namespace na cestu
                 $filePath = str_replace('\\', DIRECTORY_SEPARATOR, $relativePath) . '.php';
                 $fullPath = $basePath . DIRECTORY_SEPARATOR . $filePath;
-                
-                // Debug - můžeš toto dočasně odkomentovat pro testování
-                // echo "Trying: $fullPath\n";
                 
                 if (file_exists($fullPath)) {
                     return $fullPath;
@@ -138,7 +125,6 @@ class Autoload {
     }
 
     public function loadClass(string $class): void {
-        // Před každým pokusem o načtení aktualizujeme cache
         $this->loadCache();
 
         if (isset($this->classMap[$class])) {
@@ -149,17 +135,14 @@ class Autoload {
                     $this->loadedFiles[] = $file;
                     return;
                 } else {
-                    // Soubor neexistuje, odebereme ho z cache
                     unset($this->classMap[$class]);
                     $this->saveCache();
                 }
             }            
         }
 
-        // Nejprve zkusíme najít soubor pomocí registrovaných knihoven
         $file = $this->findFileForClass($class);
         
-        // Pokud nenajdeme v knihovnách, zkusíme standardní cestu
         if (!$file) {
             $standardFile = strtolower(str_replace('\\', DIRECTORY_SEPARATOR, $class) . '.php');
             if (file_exists($standardFile)) {
@@ -186,7 +169,6 @@ class Autoload {
             }
         }
 
-        // Cache ukládáme pouze pokud máme nové třídy
         if ($hasNewClasses) {
             $this->saveCache();
         }
@@ -199,14 +181,12 @@ class Autoload {
         }
     }
 
-    // Metoda pro ruční přidání tříd do cache
     public function addClass(string $class, string $file): void {
         $this->loadCache();
         $this->classMap[$class] = $file;
         $this->saveCache();
     }
 
-    // Metoda pro vyčištění neexistujících souborů z cache
     public function cleanCache(): void {
         $this->loadCache();
         $cleaned = false;
@@ -223,13 +203,11 @@ class Autoload {
         }
     }
 
-    // Getter pro debug účely
     public function getClassMap(): array {
         $this->loadCache();
         return $this->classMap;
     }
 
-    // Getter pro registrované knihovny
     public function getLibraryPaths(): array {
         $this->loadCache();
         return $this->libraryPaths;
@@ -282,7 +260,12 @@ class Autoload {
 class DocParser {
     /**
      * The parse method processes the doc string and calls the resolver callback for each annotation found.
-     *
+     * 
+     * Possible formats:
+     *  @method("arg1", "arg2")   -> contains arguments in parentheses (group 2)
+     *  @primaryKey               -> without arguments
+     *  @get index                -> argument without parentheses (group 3)
+     * 
      * @param string   $docString Documentation block text.
      * @param callable $resolver  A callback that receives a method name and an array of arguments.
      */
@@ -421,39 +404,66 @@ class DocParser {
     }
 }
 
-if(defined("DEBUG")) {
+if (defined("DEBUG")) {
     class DebugTimer {
-        private static array $timers = [];
+        private static array $records = [];
 
         public static function start(string $name): void {
-            if (isset(self::$timers[$name])) {
-                throw new Exception("Timer '$name' is already running.");
-            }
-            self::$timers[$name] = microtime(true);
+            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 1)[0];
+            $file = $backtrace['file'] ?? 'unknown';
+            $line = $backtrace['line'] ?? 0;
+
+            self::$records[$name][] = [
+                'start' => microtime(true),
+                'stop'  => null,
+                'file'  => $file,
+                'line'  => $line,
+            ];
         }
 
         public static function stop(string $name): float {
-            if (!isset(self::$timers[$name])) {
+            if (!isset(self::$records[$name]) || empty(self::$records[$name])) {
                 throw new Exception("Timer '$name' was not started.");
             }
 
-            $duration = microtime(true) - self::$timers[$name];
-            return $duration;
+            for ($i = count(self::$records[$name]) - 1; $i >= 0; $i--) {
+                if (self::$records[$name][$i]['stop'] === null) {
+                    self::$records[$name][$i]['stop'] = microtime(true);
+                    return self::$records[$name][$i]['stop'] - self::$records[$name][$i]['start'];
+                }
+            }
+
+            throw new Exception("No running timer found for '$name'.");
         }
 
         public static function dump(int $precision = 4): void {
-            echo "Debuging times: <br/>";
-            foreach(self::$timers as $name => $time) {
-                $duration = microtime(true) - $time;
-                echo "⏱ Timer '$name': " . round($duration, $precision) . " seconds<br/>";
+            echo "<pre>🕒 Debugging Timers:\n";
+            foreach (self::$records as $name => $entries) {
+                echo "Timer: $name\n";
+                foreach ($entries as $index => $data) {
+                    $start = date("H:i:s", (int)$data['start']);
+                    $duration = $data['stop']
+                        ? round($data['stop'] - $data['start'], $precision)
+                        : "(still running)";
+                    echo sprintf(
+                        "  #%d → %s:%d | Start: %s | Duration: %s sec\n",
+                        $index + 1,
+                        $data['file'],
+                        $data['line'],
+                        $start,
+                        $duration
+                    );
+                }
+                echo "\n";
             }
+            echo "</pre>";
         }
     }
-}else{
+} else {
     class DebugTimer {
         public static function start(string $name): void {}
         public static function stop(string $name): float { return 0.0; }
-        public static function dump(int $precision = 4): void { }
+        public static function dump(int $precision = 4): void {}
     }
 }
 
@@ -3514,6 +3524,12 @@ class QueryBuilder {
             foreach($condition as $key => $cond) {
                 $bindName = $this->generateBindName();
                 $compare = $cond === null? "IS": "=";
+
+                $last2part = substr($key, -2);
+                if(in_array($last2part, ["<>", "!=", "<=", ">="])) {
+                    $compare = $last2part;
+                    $key = trim(substr($key, 0, -2));
+                }
 
                 $this->where[] = [
                     'type' => count($this->where) > 0 ? 'AND' : '',
