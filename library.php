@@ -1270,7 +1270,7 @@ class Router {
 
     public static function url(bool $full = false, bool $_request = false): string {
         $url = $_GET['url'] ?? '';
-        $url = rtrim($url, '/');
+        $url = trim($url, '/');
         $requestUri = $_SERVER['REQUEST_URI'];
         $requestUri = rtrim($requestUri, '/') . '/';
 
@@ -1283,7 +1283,12 @@ class Router {
             $query = $_request && isset($requestParts[1]) ? '?' . $requestParts[1] : '';
             $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}{$query}";
         } else {
-            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}" . str_replace("/{$url}", '/', $requestPath);
+            if ($url !== '' && str_ends_with(trim($requestPath, '/'), $url)) {
+                $basePath = preg_replace('#' . preg_quote($url, '#') . '/?$#', '', trim($requestPath, '/'));
+                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}/{$basePath}";
+            } else {
+                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}";
+            }
         }
 
         return rtrim($ret, '/');
@@ -2732,9 +2737,8 @@ class Cookies {
 
 			if(substr($time, 0, 1) != "-"){				
 				$hash = sha1($name.$value);
-				$time = strtotime($time);
 				$url  = Router::url();
-				setcookie("SECURITY_".$name, $hash.";;".time().";;".$url, $time, "/");
+				setcookie("SECURITY_".$name, $hash.";;".time().";;".$url, (is_int($time)? time() + $time: strtotime($time)), "/");
 			}else{				
 				setcookie("SECURITY_".$name, "", strtotime("-1 hour"), "/");
 				return false;
@@ -4493,7 +4497,7 @@ class ControllerAction {
         return $this->params["view"];
     }
 
-    public function getModel(): array {
+    public function getModel(): array | object {
         if($this->type != ControllerActionType::View) throw new Exception("getModel can be called only for View type");        
         $model = $this->params["model"];
         return is_null($model)? []: $model;
@@ -4509,7 +4513,7 @@ class ControllerAction {
         return $this->params["redirect"];
     }
 
-    public static function makeViewModel(string $class, string $view, array|null $model, bool $clearContent): ControllerAction {
+    public static function makeViewModel(string $class, string $view, array|null|object $model, bool $clearContent): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->params = [
             "class" => $class,
@@ -4712,7 +4716,7 @@ class CookieAuthentication implements AuthenticationMethod {
         if($cookieName != "") {
             $this->cookieName = $cookieName;
         }
-        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day", 0): (is_int($expiration)? $expiration: strtotime($expiration, 0)));        
+        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day", 0): (is_int($expiration)? $expiration: strtotime($expiration)));        
     }
 
     public function authenticate(string | object $value): bool {
