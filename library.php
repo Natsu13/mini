@@ -3169,7 +3169,7 @@ abstract class Model {
         if ($this->$primaryKey === null || $this->state === ModelState::New) {
             // INSERT
             $placeholders = array_fill(0, count($columns), '?');
-            $stmt = $db->prepare("INSERT INTO " . $this->table . " (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
+            $stmt = $db->prepare("INSERT INTO `" . $this->table . "` (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
 
             if ($stmt->execute($values)) {
                 if ($this->primaryKeyAutoIncrement) {
@@ -3185,7 +3185,7 @@ abstract class Model {
             foreach ($columns as $column) {
                 $setColumns[] = "$column = ?";
             }
-            $stmt = $db->prepare("UPDATE " . $this->table . " SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
+            $stmt = $db->prepare("UPDATE `" . $this->table . "` SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
             $values[] = $this->$primaryKey;
 
             $this->state = ModelState::Changed;
@@ -3555,7 +3555,7 @@ class QueryBuilder {
             $this->where[] = [
                 'type' => count($this->where) > 0 ? 'AND' : '',
                 'value' => $condition,
-                'binds' => $params,
+                'binds' => is_array($params)? $params: [$params],
             ];
             return $this;
         }
@@ -3607,18 +3607,27 @@ class QueryBuilder {
 	 * DataTableLike::$RIGHT = 2
 	 */
 	public function like($column, $value, $type = 0, $isOr = false): self {
-		//"_to LIKE %~like~", $filter["receiver"]
-		$like = "%~like~";
-		if($type == DataTableLike::Left) $like = "%~like";
-		else if($type == DataTableLike::Right) $like = "%like~";
+        $mask = "%";
+        if ($type == DataTableLike::Left) {
+            $mask = "%s%%";
+        } else if ($type == DataTableLike::Right) {
+            $mask = "%%s%";
+        } else {
+            $mask = "%%%s%%";
+        }
+        
+        $bindName = $this->generateBindName();
+        $condition = "$column LIKE $bindName";
+        $finalValue = str_replace('%s', $value, $mask);
 
-		if($isOr)
-			$this->whereOr($column." LIKE ".$like, $value);
-		else
-			$this->where($column." LIKE ".$like, $value);
+        if ($isOr) {
+            $this->whereOr($condition, [$bindName => $finalValue]);
+        } else {
+            $this->where($condition, [$bindName => $finalValue]);
+        }
 
-		return $this;
-	}
+        return $this;
+    }
 
 	public function likeOr($column, $value, $type = 0): self {
 		return $this->like($column, $value, $type, true);
@@ -3645,7 +3654,7 @@ class QueryBuilder {
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
             $stmt->bindValue($name, $value, Database::getPdoParamType($value));
-        }        
+        }                
         
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -3789,7 +3798,7 @@ class QueryBuilder {
             $sql[] = $queryType . " " . implode(", ", $columns);
         }
 
-        $sql[] = "FROM " . $this->table;
+        $sql[] = "FROM `" . $this->table . "`";
 
         foreach ($this->joins as $join) {
             $condition = str_replace(
@@ -4374,7 +4383,12 @@ class Request {
     }
 
     public function isJsonRequest(): bool {
-        return (empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false) || $this->isAjax();
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+        
+        return strpos($contentType, 'application/json') !== false || 
+               strpos($accept, 'application/json') !== false || 
+               $this->isAjax();
     }
 
     public function isHead(): bool {
@@ -4386,6 +4400,25 @@ class Request {
         (!empty($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
         (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
     }    
+
+    /**
+     * @param bool $associative
+     * @return mixed|null
+     */
+    public function getJson(bool $associative = true): mixed {
+        $input = file_get_contents('php://input');
+        
+        if (empty($input)) {
+            return null;
+        }
+
+        try {
+            $data = json_decode($input, $associative, 512, JSON_THROW_ON_ERROR);
+            return $data;
+        } catch (\JsonException $e) {
+            return null;
+        }
+    }
 }
 
 class Response {
