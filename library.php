@@ -3478,10 +3478,178 @@ class ModelListResult {
     public Paginator $paginator;
 }
 
-enum DataTableLike {
-    case Both;
-    case Left;
-    case Right;
+enum DataTableLike: int {
+    case Both = 1;
+    case Left = 2;
+    case Right = 3;
+}
+
+class QueryBuilderBindingGenerator {
+    private $bindCounter = 0;
+
+    public function __construct(){
+        
+    }
+
+    public function generateBindName() {
+        $this->bindCounter++;
+        return ":param" . $this->bindCounter;
+    }
+}
+
+class QueryBuilderWhere {
+    private array $conditions = [];
+    private QueryBuilderBindingGenerator $bindingGenerator;
+
+    public function __construct(QueryBuilderBindingGenerator $bindingGenerator) {
+        $this->bindingGenerator = $bindingGenerator;
+    }
+
+    public function and(string|array|callable $condition, $params = []): self {
+        $this->add('AND', $condition, $params);
+        return $this;
+    }
+
+    public function or(string|array|callable $condition, $params = []): self {
+        $this->add('OR', $condition, $params);
+        return $this;
+    }
+
+    private function add(string $operator, string|array|callable $condition, $params = []): void {
+        $prefix = empty($this->conditions) ? '' : $operator;
+
+        if (is_callable($condition)) {
+            $subWhere = new self($this->bindingGenerator);
+            $condition($subWhere);
+            
+            $this->conditions[] = [
+                'type' => $prefix,
+                'nested' => $subWhere
+            ];
+            return;
+        }
+
+        if (is_array($condition)) {
+            foreach ($condition as $key => $val) {
+                $bindName = $this->bindingGenerator->generateBindName();
+                $compare = ($val === null) ? "IS" : "=";
+
+                $last2part = substr($key, -2);
+                if (in_array($last2part, ["<>", "!=", "<=", ">="])) {
+                    $compare = $last2part;
+                    $key = trim(substr($key, 0, -2));
+                }
+
+                $this->conditions[] = [
+                    'type' => $prefix,
+                    'column' => $key,
+                    'operator' => $compare,
+                    'bindName' => $bindName,
+                    'value' => $val
+                ];
+                $prefix = $operator;
+            }
+            return;
+        }
+
+        if (is_string($condition) && !preg_match('/[=><!]|LIKE/i', $condition) && !empty($params) && !is_array($params)) {
+            $bindName = $this->bindingGenerator->generateBindName();
+            $this->conditions[] = [
+                'type' => $prefix,
+                'column' => $condition,
+                'operator' => '=',
+                'bindName' => $bindName,
+                'value' => $params
+            ];
+            return;
+        }
+
+        $binds = [];
+        if (!is_array($params) && str_contains($condition, ':')) {
+            if (preg_match('/:\w+/', $condition, $m)) {
+                $binds[$m[0]] = $params;
+            }
+        } elseif (is_array($params) && !empty($params)) {
+            $binds = $params;
+        } else {
+            $regex = '/(\w+)\s*(=|>|<|>=|<=|!=)\s*(\d+|\'[^\']*\'|"[^"]*")/';
+            if (preg_match_all($regex, $condition, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $column = $match[1];
+                    $op = $match[2];
+                    $valRaw = trim($match[3], '\'"');
+                    $bindName = $this->bindingGenerator->generateBindName();
+                    $condition = str_replace($match[0], "$column $op $bindName", $condition);
+                    $binds[$bindName] = is_numeric($valRaw) ? (float)$valRaw : $valRaw;
+                }
+            }
+        }
+
+        $this->conditions[] = [
+            'type' => $prefix,
+            'raw' => $condition,
+            'binds' => $binds
+        ];
+    }
+
+    public function like(string $column, string $value, DataTableLike $type = DataTableLike::Both, bool $isOr = false): self {
+        $mask = match($type) {
+            DataTableLike::Both => "$value%",
+            DataTableLike::Left => "%$value",
+            default => "%$value%"
+        };
+        
+        $bindName = $this->bindingGenerator->generateBindName();
+        $condition = "$column LIKE $bindName";
+        
+        if ($isOr) {
+            $this->or($condition, [$bindName => $mask]);
+        } else {
+            $this->and($condition, [$bindName => $mask]);
+        }
+
+        return $this;
+    }
+
+    public function likeOr(string $column, string $value, DataTableLike $type = DataTableLike::Both): self {
+        return $this->like($column, $value, $type, true);
+    }
+
+    public function getConditions(): array {
+        return $this->conditions;
+    }
+
+    public function buildSql(): string {
+        $sql = "";
+        foreach ($this->conditions as $cond) {
+            $prefix = $cond['type'] !== '' ? " ".$cond['type']." " : "";
+            
+            if (isset($cond['nested'])) {
+                $sql .= $prefix . "(" . $cond['nested']->buildSql() . ")";
+            } elseif (isset($cond['column'])) {
+                $sql .= $prefix . $cond['column'] . " ".$cond['operator']." ".$cond['bindName'];
+            } elseif (isset($cond['raw'])) {
+                $sql .= $prefix . $cond['raw'];
+            }
+        }
+        return $sql;
+    }
+
+    public function getAllBindings(): array {
+        $allBinds = [];
+
+        foreach ($this->conditions as $cond) {
+            if (isset($cond['nested'])) {
+                $allBinds = array_merge($allBinds, $cond['nested']->getAllBindings());
+            } elseif (isset($cond['column'])) {
+                $allBinds[$cond['bindName']] = $cond['value'];
+            } elseif (isset($cond['raw']) && !empty($cond['binds'])) {
+                $allBinds = array_merge($allBinds, $cond['binds']);
+            }
+        }
+
+        return $allBinds;
+    }
 }
 
 /**
@@ -3500,7 +3668,8 @@ class QueryBuilder {
 	private $sql = [];
 	private $debugSql = [];
 	private $takeAllFieldsFromTable = false;
-    private $bindCounter = 0;
+    private QueryBuilderBindingGenerator $bindingGenerator;
+    private QueryBuilderWhere $whereBuilder;
     private $className;
 
     /**
@@ -3512,6 +3681,8 @@ class QueryBuilder {
 		$this->table = $table;
         $this->connection = $connection;
         $this->className = $className;
+        $this->bindingGenerator = new QueryBuilderBindingGenerator();
+        $this->whereBuilder = new QueryBuilderWhere($this->bindingGenerator);
 	}
 
 	public function table(string $name): self {
@@ -3524,71 +3695,14 @@ class QueryBuilder {
 		return $this;
 	}
 
-	private function generateBindName() {
-        $this->bindCounter++;
-        return ":param" . $this->bindCounter;
-    }
-
-    public function where($condition, $params = []): self {
-        if(is_array($condition)) {
-            foreach($condition as $key => $cond) {
-                $bindName = $this->generateBindName();
-                $compare = $cond === null? "IS": "=";
-
-                $last2part = substr($key, -2);
-                if(in_array($last2part, ["<>", "!=", "<=", ">="])) {
-                    $compare = $last2part;
-                    $key = trim(substr($key, 0, -2));
-                }
-
-                $this->where[] = [
-                    'type' => count($this->where) > 0 ? 'AND' : '',
-                    'value' => "$key $compare $bindName",
-                    'binds' => [$bindName => $cond],
-                ];        
-            }
-
-            return $this;
-        }
-
-        if (!empty($params)) {
-            $this->where[] = [
-                'type' => count($this->where) > 0 ? 'AND' : '',
-                'value' => $condition,
-                'binds' => is_array($params)? $params: [$params],
-            ];
-            return $this;
-        }
-    
-        $binds = [];
-        $regex = '/(\w+)\s*(=|>|<|>=|<=|!=)\s*(\d+|\'[^\']*\'|"[^"]*")/'; 
-    
-        if (preg_match_all($regex, $condition, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $column = $match[1];
-                $operator = $match[2];
-                $value = trim($match[3], '\'"');
-                $bindName = $this->generateBindName();
-                $condition = str_replace($match[0], "$column $operator $bindName", $condition);
-                $binds[$bindName] = is_numeric($value) ? (float)$value : $value;
-            }
-        }
-    
-        $this->where[] = [
-            'type' => count($this->where) > 0 ? 'AND' : '',
-            'value' => $condition,
-            'binds' => $binds,
-        ];
+    public function where(string|array|callable $condition, array $params = []): self {
+        $this->whereBuilder->and($condition, $params);
         return $this;
     }
 
-	public function whereOr($condition, $params = []): self{
-        $change = (count($this->where) > 0);
-        $this->where($condition, $params);
-        if($change)
-		    $this->where[count($this->where) - 1]["type"] = "OR";
-
-		return $this;
+	public function whereOr($condition, $params = []): self {
+        $this->whereBuilder->or($condition, $params);
+        return $this;
 	}
 
 	/**
@@ -3606,31 +3720,14 @@ class QueryBuilder {
 	 * DataTableLike::$LEFT = 1
 	 * DataTableLike::$RIGHT = 2
 	 */
-	public function like($column, $value, $type = 0, $isOr = false): self {
-        $mask = "%";
-        if ($type == DataTableLike::Left) {
-            $mask = "%s%%";
-        } else if ($type == DataTableLike::Right) {
-            $mask = "%%s%";
-        } else {
-            $mask = "%%%s%%";
-        }
-        
-        $bindName = $this->generateBindName();
-        $condition = "$column LIKE $bindName";
-        $finalValue = str_replace('%s', $value, $mask);
-
-        if ($isOr) {
-            $this->whereOr($condition, [$bindName => $finalValue]);
-        } else {
-            $this->where($condition, [$bindName => $finalValue]);
-        }
-
+	public function like($column, $value, DataTableLike $type = DataTableLike::Both, $isOr = false): self {
+        $this->whereBuilder->like($column, $value, $type, $isOr);
         return $this;
     }
 
-	public function likeOr($column, $value, $type = 0): self {
-		return $this->like($column, $value, $type, true);
+	public function likeOr($column, $value, DataTableLike $type = DataTableLike::Both): self {
+        $this->whereBuilder->like($column, $value, $type, true);
+        return $this;
 	}
 
 	public function count(): int {
@@ -3809,13 +3906,10 @@ class QueryBuilder {
             $sql[] = "{$join["type"]} JOIN {$join["table"]} AS {$join["name"]} ON $condition";
         }
 
-        if (!empty($this->where)) {
-            $whereParts = [];
-            foreach ($this->where as $where) {
-                $whereParts[] = ($where["type"] ?? "") . " " . $where["value"];                
-                $binds = array_merge($binds, $where["binds"]);
-            }
-            $sql[] = "WHERE " . implode(" ", $whereParts);
+        $whereText = $this->whereBuilder->buildSql();
+        if($whereText != null && strlen($whereText) > 0) {
+            $sql[] = "WHERE " . $whereText;
+            $binds = array_merge($binds, $this->whereBuilder->getAllBindings());
         }
 
         if (!empty($this->having)) {
