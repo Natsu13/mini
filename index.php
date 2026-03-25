@@ -64,8 +64,7 @@ echo "<html>";
 
             $user = $userService->current();
 
-            $builder = User::where("login = 'admin'")
-                ->where("id = :id", [":id" => 1])->limit(10);
+            $builder = User::where(fn($w) => $w->and("login", "admin")->and("id = :id", [":id" => 1]))->limit(10);
 
             $user1 = User::findById(1);
 

@@ -2701,6 +2701,25 @@ class TokenType {
 }
 
 class Cookies {		
+    private static function getSecret(): string {
+        $file = __DIR__ . '/secret.json';
+        if (!file_exists($file)) {
+            $dataToSave = [
+                "cookies" => bin2hex(random_bytes(16))
+            ];
+            file_put_contents($file, json_encode($dataToSave, JSON_PRETTY_PRINT), LOCK_EX);
+        }
+        $jsonContent = file_get_contents($file);
+        $config = json_decode($jsonContent, true);
+        if($config == null) {
+            $config = [];
+        }
+        if(!isset($config["cookies"])) {
+            $config["cookies"] = bin2hex(random_bytes(16));
+            file_put_contents($file, json_encode($dataToSave, JSON_PRETTY_PRINT), LOCK_EX);
+        }
+        return $config["cookies"];
+    }
 	/*
 		Example :
 		Cookies::set( array("name" => "test", "permision" => "admin"), "+24 hour", false );
@@ -2736,7 +2755,7 @@ class Cookies {
             }
 
 			if(substr($time, 0, 1) != "-"){				
-				$hash = sha1($name.$value);
+				$hash = sha1($name.$value.self::getSecret());
 				$url  = Router::url();
 				setcookie("SECURITY_".$name, $hash.";;".time().";;".$url, (is_int($time)? time() + $time: strtotime($time)), "/");
 			}else{				
@@ -2768,7 +2787,7 @@ class Cookies {
 	public static function security_check($name): bool {
 		$security = Cookies::security_get($name);
 		if($security != false){			
-			if(sha1($name.$_COOKIE[$name]) == $security["hash"])
+			if(sha1($name.$_COOKIE[$name].self::getSecret()) == $security["hash"])
 				return true;
 			else
 				return false;
@@ -3552,12 +3571,12 @@ class QueryBuilderWhere {
             return;
         }
 
-        if (is_string($condition) && !preg_match('/[=><!]|LIKE/i', $condition) && !empty($params) && !is_array($params)) {
+        if (is_string($condition) && !preg_match('/[=><!]|LIKE/i', $condition) && ($params !== [] || $params === null) && !is_array($params)) {
             $bindName = $this->bindingGenerator->generateBindName();
             $this->conditions[] = [
                 'type' => $prefix,
                 'column' => $condition,
-                'operator' => '=',
+                'operator' => ($params === null) ? 'IS' : '=',
                 'bindName' => $bindName,
                 'value' => $params
             ];
@@ -3565,7 +3584,7 @@ class QueryBuilderWhere {
         }
 
         $binds = [];
-        if (!is_array($params) && str_contains($condition, ':')) {
+        if (!is_array($params) && is_string($condition) && str_contains($condition, ':')) {
             if (preg_match('/:\w+/', $condition, $m)) {
                 $binds[$m[0]] = $params;
             }
@@ -3615,6 +3634,45 @@ class QueryBuilderWhere {
         return $this->like($column, $value, $type, true);
     }
 
+    public function in(string $column, array $values, bool $isOr = false): self {
+        return $this->addInCondition('IN', $column, $values, $isOr);
+    }
+
+    public function inOr(string $column, array $values): self {
+        return $this->in($column, $values, true);
+    }
+
+    public function notIn(string $column, array $values, bool $isOr = false): self {
+        return $this->addInCondition('NOT IN', $column, $values, $isOr);
+    }
+
+    public function notInOr(string $column, array $values, bool $isOr = false): self {
+        return $this->notIn($column, $values, true);
+    }
+
+    private function addInCondition(string $operator, string $column, array $values, bool $isOr): self {
+        $binds = [];
+        $placeholders = [];
+        
+        foreach ($values as $value) {
+            $bindName = $this->bindingGenerator->generateBindName();
+            $placeholders[] = $bindName;
+            $binds[$bindName] = $value;
+        }
+
+        $prefix = empty($this->conditions) ? '' : ($isOr ? 'OR' : 'AND');
+
+        $this->conditions[] = [
+            'type' => $prefix,
+            'column' => $column,
+            'operator' => $operator,
+            'placeholders' => $placeholders,
+            'values' => $binds
+        ];
+
+        return $this;
+    }
+
     public function getConditions(): array {
         return $this->conditions;
     }
@@ -3625,7 +3683,12 @@ class QueryBuilderWhere {
             $prefix = $cond['type'] !== '' ? " ".$cond['type']." " : "";
             
             if (isset($cond['nested'])) {
-                $sql .= $prefix . "(" . $cond['nested']->buildSql() . ")";
+                $nestedSql = $cond['nested']->buildSql();
+                if ($nestedSql !== '') {
+                    $sql .= $prefix . "(" . $nestedSql . ")";
+                }
+            } elseif (isset($cond['operator']) && ($cond['operator'] === 'IN' || $cond['operator'] === 'NOT IN')) {
+                $sql .= $prefix . $cond['column'] . " " . $cond['operator'] . " (" . implode(', ', $cond['placeholders']) . ")";
             } elseif (isset($cond['column'])) {
                 $sql .= $prefix . $cond['column'] . " ".$cond['operator']." ".$cond['bindName'];
             } elseif (isset($cond['raw'])) {
@@ -3641,6 +3704,8 @@ class QueryBuilderWhere {
         foreach ($this->conditions as $cond) {
             if (isset($cond['nested'])) {
                 $allBinds = array_merge($allBinds, $cond['nested']->getAllBindings());
+            } elseif (isset($cond['operator']) && ($cond['operator'] === 'IN' || $cond['operator'] === 'NOT IN')) {
+                $allBinds = array_merge($allBinds, $cond['values']);
             } elseif (isset($cond['column'])) {
                 $allBinds[$cond['bindName']] = $cond['value'];
             } elseif (isset($cond['raw']) && !empty($cond['binds'])) {
@@ -3729,6 +3794,26 @@ class QueryBuilder {
         $this->whereBuilder->like($column, $value, $type, true);
         return $this;
 	}
+
+    public function in($column, array $values): self {
+        $this->whereBuilder->in($column, $values);
+        return $this;
+    }
+
+    public function inOr($column, array $values): self {
+        $this->whereBuilder->in($column, $values, true);
+        return $this;
+    }
+
+    public function notIn($column, array $values): self {
+        $this->whereBuilder->notIn($column, $values);
+        return $this;
+    }
+
+    public function notInOr($column, array $values): self {
+        $this->whereBuilder->notIn($column, $values, true);
+        return $this;
+    }
 
 	public function count(): int {
         $buildData = $this->buildSql(true);        
