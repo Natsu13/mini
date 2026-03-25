@@ -46,6 +46,11 @@ A very small and lightweight PHP Model-View-Controller (MVC) framework designed 
                 root /path/to/your/project; # Replace with the actual path to the project root
                 index index.php;
 
+                location ~* \.(json|env|log|ini)$ {
+                    deny all;
+                    error_page 403 = /403.html;
+                }
+
                 location / {
                     try_files $uri $uri/ /index.php?$query_string;
                 }
