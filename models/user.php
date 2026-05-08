@@ -5,9 +5,6 @@ use Database;
 
 /** 
  * @table("users") 
- * 
- * @method \Model\Permission|null permission()
- * @method \QueryBuilder articles()
  */
 class User extends \Model {
     /** @primaryKey */
@@ -32,13 +29,18 @@ class User extends \Model {
 
     /**
      * @hasOne("Permission")
-     */
-    private function permission() { }
+     */    
+    public function getPermission(): ?Permission {
+        return $this->getRelation("permission");
+    }
 
     /**
      * @hasMany("Article", "author_id")
+     * @return \QueryBuilder<\Models\Article>
      */
-    private function articles() { }
+    public function getArticles(): \QueryBuilder {
+        return $this->getRelation("articles");
+    }
 
     public static function findByEmail($email): ?User {
         $obj = (new static);

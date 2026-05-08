@@ -3218,16 +3218,19 @@ abstract class Model {
 
     private function getRelationships(): array {
         $reflector = new ReflectionClass($this);
-        $methods = $reflector->getMethods(ReflectionMethod::IS_PRIVATE);
+        $methods = $reflector->getMethods(ReflectionMethod::IS_PRIVATE | ReflectionMethod::IS_PUBLIC);
         $relationships = [];
 
         foreach ($methods as $method) {
             $docComment = $method->getDocComment();
             if (!$docComment) continue;
 
+            $methodName = $method->getName();
+            $relationKey = lcfirst(preg_replace('/^get/', '', $methodName));
+
             // hasMany - foreign key je v cílové tabulce
             if (preg_match('/@hasMany\("([^"]+)"\s*,\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$method->getName()] = [
+                $relationships[$relationKey] = [
                     'type' => 'hasMany',
                     'class' => $matches[1],
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
@@ -3235,7 +3238,7 @@ abstract class Model {
             }
             // belongsTo - foreign key je v aktuální tabulce
             else if (preg_match('/@belongsTo\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$method->getName()] = [
+                $relationships[$relationKey] = [
                     'type' => 'belongsTo',
                     'class' => $matches[1],
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : 'id' //strtolower($matches[1]) . '_id'
@@ -3243,7 +3246,7 @@ abstract class Model {
             }
             // hasOne - foreign key je v aktuální tabulce (jako User → Permission)
             else if (preg_match('/@hasOne\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$method->getName()] = [
+                $relationships[$relationKey] = [
                     'type' => 'hasOne',
                     'class' => $matches[1],
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower($matches[1]) . '_id'
@@ -3251,7 +3254,7 @@ abstract class Model {
             }
             // hasOneInverse - foreign key je v cílové tabulce (jako Manifest → DailyStat)
             else if (preg_match('/@hasOneInverse\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$method->getName()] = [
+                $relationships[$relationKey] = [
                     'type' => 'hasOneInverse',
                     'class' => $matches[1],
                     'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'

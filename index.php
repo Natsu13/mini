@@ -71,13 +71,13 @@ echo "<html>";
             $http = new Http();
 
             $articleLimitOnPage = 10;
-            $articles = $user->articles();
+            $articles = $user->getArticles();
             $paginator = new Paginator($articles->count(), $articleLimitOnPage, Router::url(true));
             $articles = $articles->order("created DESC")->limit($articleLimitOnPage)->page($paginator->getCurrentPage());
 
             $model = [
                 "user" => $user,
-                "permission" => $user->permission(),
+                "permission" => $user->getPermission(),
                 "query" => $user1/*$builder->fetchAll()*/,
                 "api" => $http->postJson(Router::url() . "/apitest/")->getResponse(),
                 "api2" => (new Http())->postJson(Router::url() . "/apitest2/")->getResponse(),

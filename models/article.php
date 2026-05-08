@@ -25,7 +25,9 @@ class Article extends \Model {
     /**
      * @hasOne("User", "author_id")
      */
-    private function author() { }
+    private function getAuthor(): ?User {
+        return $this->getRelation("author");
+    }
 
     protected function onCreated() {
         $this->created = time();
