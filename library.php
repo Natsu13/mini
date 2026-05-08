@@ -3087,6 +3087,9 @@ abstract class Model {
         return self::where([$definition->primaryKey => $id])->fetch();
     }
 
+    /**
+     * @return static[]|null
+     */
     public static function fetchAll(): ?array {
         $definition = self::getTableDefinition();
         $db = self::getConnection();
@@ -3834,6 +3837,9 @@ class QueryBuilder {
 		return $result;
 	}
 
+    /**
+     * @return T[]
+     */
 	public function fetchAll(): array {
         $buildData = $this->buildSql(false);
 		$stmt = $this->connection->prepare($buildData["sql"]);
