@@ -11,10 +11,14 @@ class Article extends \Controller {
     /**
      * @method GET
      */
+    public function index(\Models\Article $article) {
+        return $this->view("index", ["id" => $article->id, "article" => $article]);
+    }
+    /*Old style that still works, but not as good as the new one with automatic model binding
     public function index(int $id) {
         $article = \Models\Article::findById($id);
         return $this->view("index", ["id" => $id, "article" => $article]);
-    }
+    }*/
 
     /**
      * @allowAnonymous

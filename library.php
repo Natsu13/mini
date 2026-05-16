@@ -537,32 +537,43 @@ class Utilities {
     }
 
     public static function random(int $length): string {
-		$output = "";
-		$characters = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';		
-		$charactersCount = strlen($characters);
-		for ($i = 0; $i < $length; $i++) {
-			$output.= $characters[mt_rand(0, $charactersCount - 1)];
-		}
-		return $output;
-	}
+        $characters = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $randomizer = new \Random\Randomizer(new \Random\Engine\Secure());
+        return $randomizer->getBytesFromString($characters, $length);
+    }
 
     public static function ip(bool $pure = false): string {
-        if(isset($_SERVER["HTTP_X_FORWARDED_FOR"])){
-			$ip = $_SERVER["HTTP_X_FORWARDED_FOR"];
-		}else if(isset($_SERVER["HTTP_FORWARDED_FOR"])){
-			$ip = $_SERVER["HTTP_FORWARDED_FOR"];
-		}else{
-			$ip = $_SERVER["REMOTE_ADDR"];
-		}
-		if($pure) return $ip;
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-		if($ip == "::1"){ $ip = "127.0.0.1"; }
-		if(strpos($ip, ",") !== false){
-			$ip = explode(",", $ip);
-			return trim($ip[0]);
-		}
-		
-		return $ip;
+        // Your trusted proxy servers IP addresses
+        $trustedProxies = ['127.0.0.1', '::1', '172.18.0.1']; 
+
+        if (in_array($ip, $trustedProxies)) {
+            if (isset($_SERVER["HTTP_X_FORWARDED_FOR"])) {
+                $ip = $_SERVER["HTTP_X_FORWARDED_FOR"];
+            } elseif (isset($_SERVER["HTTP_FORWARDED_FOR"])) {
+                $ip = $_SERVER["HTTP_FORWARDED_FOR"];
+            }
+        }
+
+        if (strpos($ip, ',') !== false) {
+            $ips = explode(',', $ip);
+            $ip = trim($ips[0]);
+        }
+
+        if ($pure) {
+            return (string)$ip;
+        }
+
+        if ($ip === "::1") {
+            $ip = "127.0.0.1";
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return "0.0.0.0";
+        }
+
+        return $ip;
     }
 
     public static function isEmail(string $email): bool {
@@ -1120,6 +1131,12 @@ class Container {
     }
 }
 
+class ModelNotFoundException extends \Exception {
+    public function __construct(string $class, mixed $id) {
+        parent::__construct("Model '{$class}' with ID '{$id}' not found");
+    }
+}
+
 enum Method {
     case UNKNOWN;
     case GET;
@@ -1357,7 +1374,20 @@ class Router {
                 } else if (is_array($matchedRoute['handler'])) {
                     $this->procesed[] = "Called by array handler";
                     $this->processVariables($matchedRoute['variables']);
-                    $this->callController($matchedRoute['handler'], $matchedRoute['variables']);
+
+                    try {
+                        $this->callController($matchedRoute['handler'], $matchedRoute['variables']);
+                    } catch (ControllerMethodNotAllowedException $e) {
+                        $this->procesed[] = "Controller method not allowed: " . $e->getMessage();
+                        http_response_code(405);
+                        echo "Method Not Allowed";
+                        exit();
+                    } catch (ModelNotFoundException $e) {
+                        $this->procesed[] = "Model not found: " . $e->getMessage();
+                        http_response_code(404);
+                        echo "Not Found";
+                        exit();
+                    }
                 } else if ($matchedRoute['redirect']) {
                     $this->procesed[] = "Called by redirect";
                     $this->redirect($matchedRoute['handler']);
@@ -1377,9 +1407,9 @@ class Router {
         }
     }
 
-    private function callController($definition, $variables){
+    private function callController(array $definition, ?array $variables = null){
         if(!is_array($definition)) throw new Exception("Definition must be array [class, method]");        
-        $class = $originalClass = $definition[0];
+        $class = $originalClass = (string)$definition[0];
         $methodNameOrCallback = count($definition) > 1? $definition[1]: "index";        
         
         if(substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\". $class;          
@@ -1392,8 +1422,14 @@ class Router {
 
         $instance = Container::getInstance()->create($class);
 
-        //TODO: problem like "sort" etc.. functions is callable :/ maybe we can make that it must be anonymouse method
-        if(is_callable($methodNameOrCallback)){
+        // Check if the handler is a callable object (e.g., a closure or an invokable class) and not a built-in function or method for example sort function
+        $isBuiltin = false;
+        if(is_object($methodNameOrCallback) && method_exists($methodNameOrCallback, '__invoke')) {
+            $ref = new ReflectionMethod($methodNameOrCallback, '__invoke');
+            $isBuiltin = $ref->isInternal();
+        }
+
+        if(!$isBuiltin && is_callable($methodNameOrCallback)){
             $method = $methodNameOrCallback($variables);            
         }else {
             $method = $methodNameOrCallback;
@@ -1402,7 +1438,7 @@ class Router {
         if($method == null || $method == "") $method = "index";
         
         if(!method_exists($instance, $method)) 
-            throw new Exception("Method $method not found in class $class");
+            throw new Exception("Method '$method' not found in class '$class'");
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
         $methodName = $this->request->method()->name;
@@ -1443,8 +1479,51 @@ class Router {
             
             $methodParams = $reflectionMethod->getParameters();
             $resolvedParams = [];
+
+            // Pre-scan: find all model parameters to enable fallback binding by "id"
+            $modelParams = [];
+            foreach ($methodParams as $param) {
+                $type = $param->getType();
+                if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
+                    $typeName = $type->getName();
+                    if (class_exists($typeName) && is_subclass_of($typeName, \Model::class)) {
+                        $modelParams[] = $param->getName();
+                    }
+                }
+            }
+
             foreach ($methodParams as $param) {
                 $name = $param->getName();
+                $type = $param->getType();
+                
+                // --- Route Model Binding ---
+                if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
+                    $typeName = $type->getName();
+                    if (class_exists($typeName) && is_subclass_of($typeName, \Model::class)) {
+                        $rawId = $_GET[$name] ?? $_POST[$name] ?? null;
+                        
+                        // If no explicit parameter provided, but there is exactly one model parameter, try to bind by "id"
+                        if ($rawId === null && count($modelParams) === 1) {
+                            $rawId = $_GET['id'] ?? $_POST['id'] ?? null;
+                        }
+                        
+                        if ($rawId !== null) {
+                            $model = $typeName::findById($rawId);
+                            if ($model === null) {
+                                throw new \ModelNotFoundException($typeName, $rawId);
+                            }
+                            $resolvedParams[] = $model;
+                        } elseif ($param->isDefaultValueAvailable()) {
+                            $resolvedParams[] = $param->getDefaultValue();
+                        } elseif ($type->allowsNull()) {
+                            $resolvedParams[] = null;
+                        } else {
+                            throw new \Exception("Missing ID for model binding of parameter '$name' ({$typeName})");
+                        }
+                        continue;
+                    }
+                }
+
                 if (isset($_GET[$name])) {
                     $resolvedParams[] = $_GET[$name];
                 } elseif (isset($_POST[$name])) {
@@ -1456,7 +1535,7 @@ class Router {
                 } elseif ($param->isDefaultValueAvailable()) {
                     $resolvedParams[] = $param->getDefaultValue();
                 } else {
-                    throw new Exception("Missing value for parameter '$name' of method $method in class $class");
+                    throw new \Exception("Missing value for parameter '$name' of method $method in class $class");
                 }
             }
              
@@ -1775,7 +1854,7 @@ class Page {
 	 * Add style to the page
 	 * $type = "text/css" | define the style type
 	 */
-	public function addStyle($url, $type = "text/css") {
+	public function addStyle(string $url, string $type = "text/css") {
 		$this->styles[] = array("url" => $url, "type" => $type);
 	}
 
@@ -1783,7 +1862,7 @@ class Page {
 	 * Add script to page 
 	 * $inhead = true | the script will be loaded in header else at end of the page
 	 */
-	public function addScript($url, $inhead = true) {
+	public function addScript(string $url, bool $inhead = true) {
 		$this->scripts[] = array("url" => $url, "inhead" => $inhead);
 	}
 }
@@ -1814,10 +1893,9 @@ class Layout {
         }
 	}
 
-    public function render($filename, $model = NULL, $onlycompile = false, &$outputFile = null): bool {		
+    public function render(string $filename, mixed $model = NULL, bool $onlycompile = false, &$outputFile = null): bool {		
 		if (!file_exists($filename)) {
 			throw new Exception("Failed to load template \"".$filename."\"");
-			return false;
 		}	
 
 		$name = pathinfo($filename, PATHINFO_FILENAME);
@@ -1850,10 +1928,10 @@ class Layout {
 }
 
 class TemplaterV2Exception extends \Exception {
-    protected $col;
-    protected $row;
+    protected ?int $col;
+    protected ?int $row;
 
-    public function __construct($message, $file = null, $col = null, $row = null) {
+    public function __construct(string $message, $file = null, $col = null, $row = null) {
         parent::__construct($message);
 
         if ($file !== null) {
@@ -1864,11 +1942,11 @@ class TemplaterV2Exception extends \Exception {
         $this->row = $row;
     }
 
-    public function getCol() {
+    public function getCol(): ?int {
         return $this->col;
     }
 
-    public function getRow() {
+    public function getRow(): ?int {
         return $this->row;
     }
 }
@@ -1887,7 +1965,7 @@ class TemplaterV2 {
     private $lineColumn = 0;
 	private $safeBreak = 999999999;
 	private $elementWithoutPair = ["link", "input", "img", "br", "!doctype"];
-	private $controllTokensDefinition = null;
+	private ?array $controllTokensDefinition = null;
 	private $lastTokenIndex = 0;
 	private $eatTokenSafeCounter = 0;
 	private $safeBreakTokenCounter = 30;
@@ -1895,7 +1973,7 @@ class TemplaterV2 {
 	private $openControllTokens = [];
     private $printHtmlComments = true;
 
-    public function __construct($content, $fileName = "inline"){
+    public function __construct(string $content, string $fileName = "inline"){
 		if($this->controllTokensDefinition == null) {
 			$this->controllTokensDefinition = [TokenType::$LBRACKET, TokenType::$RBRACKET];
 		}
@@ -1906,11 +1984,11 @@ class TemplaterV2 {
 		$this->fileName = $fileName;
     }
 
-    private function printToken($token) {
+    private function printToken(array $token) {
         return TokenType::print($token["type"])." '".$token["value"]."'";
     }
 
-    private function printTokenInfo($token) {
+    private function printTokenInfo(array $token) {
         if($token["type"] == TokenType::$EOF) return "";
         return "(Line: ".($token["info"]["line"]["row"] + 1).":".($token["info"]["line"]["col"] + 1).")";
     }
@@ -1944,7 +2022,6 @@ class TemplaterV2 {
 		}else{
 			$this->eatTokenSafeCounter++;
 			if($this->eatTokenSafeCounter > $this->safeBreakTokenCounter) {
-				//throw new Exception("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token));
                 $this->throwException("Infinite loop occured! Token: " . $this->printToken($token)." ".$this->printTokenInfo($token), $token);
 			}
 		}
@@ -1973,14 +2050,14 @@ class TemplaterV2 {
         return $this->tokens[count($this->tokens) - 1];
     }
 
-    private function assertToken($token, $condition, $message = "", $reportedOnly = false){        
+    private function assertToken(array $token, bool $condition, string $message = "", bool $reportedOnly = false){        
         if(!$condition) {
 			if($message != "") $message = ", ".$message;
             $this->throwException(($reportedOnly?"Reported token":"Unkown token")." type '".TokenType::print($token["type"])."' ".$this->printTokenInfo($token).$message."; File: " . $this->fileName."\n", $token);
 		}
     }
 
-    private function throwException($message, $token = null) {
+    private function throwException(string $message, $token = null) {
         throw new TemplaterV2Exception(
                 $message,
                 $this->fileName,
@@ -2138,7 +2215,7 @@ class TemplaterV2 {
         }
     }
 
-    private function consumeElementParameter($token) {
+    private function consumeElementParameter(array $token) {
         $value = $token["value"];
         $this->eat();
         
@@ -2179,7 +2256,7 @@ class TemplaterV2 {
         ];
     }
 
-    private function parseControllTokens($controllTokens){
+    private function parseControllTokens(array $controllTokens){
         // text text {$model} text text
         $output = "";        
                 
@@ -2276,7 +2353,7 @@ class TemplaterV2 {
 		$this->eat(TokenType::$RBRACKET);	//}
 	}
 
-	private function registerOpenControll($name, $token) {
+	private function registerOpenControll(string $name, $token) {
 		$this->openControllTokens[] = ["type" => $name, "token" => $token];
 	}
 
@@ -2298,7 +2375,7 @@ class TemplaterV2 {
 		}
 	}
 
-    private function renderControll($input, $token) {
+    private function renderControll(string $input, $token) {
         $controll = explode(" ", $input, 2);
 		$type = trim($controll[0]);
         $value = count($controll) > 1? trim($controll[1]): "";
@@ -2412,7 +2489,7 @@ class TemplaterV2 {
         return "<?php echo ".$input."; ?>";
     }
 
-    private function toPhp($code) {
+    private function toPhp(string $code) {
         $code = trim($code);
 
         if(substr($code, 0, 1) == "[" && substr($code, strlen($code) -1, 1) == "]") {
@@ -2472,14 +2549,14 @@ class TemplaterV2 {
         return $output;
     }
 
-	private function notControll($input) {
-		return /*strpos($input, "\n") !== false || */(substr($input, 0, 1) == "\"" && strpos($input, "\n") !==false) || substr($input, 0, 1) == " " || substr($input, 0, 1) == "\n" || trim($input) == "";
+	private function notControll(string $input) {
+		return (substr($input, 0, 1) == "\"" && strpos($input, "\n") !==false) || substr($input, 0, 1) == " " || substr($input, 0, 1) == "\n" || trim($input) == "";
 	}
 
-	//param="x"
+	/*param="x"*/
     private function printOutputParameter(){
         $token = $this->getToken();
-        $endWith = "";
+        $endWith = TokenType::$NONE;
         if($token["type"] == TokenType::$APOSTROPE) {
             $endWith = TokenType::$APOSTROPE;
         }else if($token["type"] == TokenType::$QUOTEMARK) {
@@ -2490,7 +2567,7 @@ class TemplaterV2 {
         }        
 
         $this->eat();
-        if($endWith == "") return;
+        if($endWith == TokenType::$NONE) return;
 
         $text = "";
         while(($token = $this->getToken())["type"] != TokenType::$EOF) {
@@ -2515,7 +2592,7 @@ class TemplaterV2 {
         return $in.$text.$in;
     }
 
-    private function printOutputText($token){
+    private function printOutputText(array $token){
         $this->printOutput($token["value"]);
     }
 
@@ -2528,13 +2605,12 @@ class TemplaterV2 {
 		$index = $this->outputCacheIndex;
 		$this->outputCacheIndex--;
 		if($this->outputCacheIndex < 0) {
-			//throw new Exception("Output cache index is less than zero!");
             $this->throwException("Output cache index is less than zero!");
 		}
 		return $this->outputCache[$index];
 	}
 
-    private function printOutput($text) {
+    private function printOutput(string $text) {
         $this->outputCache[$this->outputCacheIndex] .= $text;
     }
 
@@ -2542,7 +2618,7 @@ class TemplaterV2 {
         return $this->output;
     }
 
-    private function utf8Split($str, $len = 1): array {
+    private function utf8Split(string $str, int $len = 1): array {
         $arr = array();
         $strLen = mb_strlen($str, 'UTF-8');
         for ($i = 0; $i < $strLen; $i++)
@@ -2634,7 +2710,7 @@ class TemplaterV2 {
         ];
     }
 
-    private function isCharacter($char){
+    private function isCharacter(string $char){
         $o = ord($char);
         return  ($o >= 65 && $o <= 90)  || 
                 ($o >= 97 && $o <= 122) ||
@@ -2650,6 +2726,7 @@ class TemplaterBuildEnd {
 }
 
 class TokenType {
+    public static $NONE = -2;
     public static $EOF = -1;
     public static $LESS_THEN = 0;
     public static $GREAT_THEN = 1;
@@ -2663,7 +2740,7 @@ class TokenType {
     public static $NEW_LINE = 9;
     public static $BACK_SLASH = 10;
 
-    public static function print($type) {
+    public static function print(TokenType | int $type) {
         switch($type) {
             case TokenType::$EOF: return "EOF";
             case TokenType::$LESS_THEN: return "<";
@@ -2681,7 +2758,7 @@ class TokenType {
         return "unknown";
     }
 
-    public static function name($type) {
+    public static function name(TokenType $type) {
         switch($type) {
             case TokenType::$EOF: return "EOF";
             case TokenType::$LESS_THEN: return "LESS_THEN";
@@ -2709,17 +2786,21 @@ class Cookies {
             ];
             file_put_contents($file, json_encode($dataToSave, JSON_PRETTY_PRINT), LOCK_EX);
         }
+
         $jsonContent = file_get_contents($file);
         $config = json_decode($jsonContent, true);
         if($config == null) {
             $config = [];
         }
+
         if(!isset($config["cookies"])) {
             $config["cookies"] = bin2hex(random_bytes(16));
-            file_put_contents($file, json_encode($dataToSave, JSON_PRETTY_PRINT), LOCK_EX);
+            file_put_contents($file, json_encode($config, JSON_PRETTY_PRINT), LOCK_EX);
         }
+
         return $config["cookies"];
     }
+
 	/*
 		Example :
 		Cookies::set( array("name" => "test", "permision" => "admin"), "+24 hour", false );
@@ -2727,7 +2808,7 @@ class Cookies {
 		Cookies::set( array("name", "permision"), "admin", "+24 hour" );
 		Cookies::set( "name", "test", "+24 hour" );
 	*/
-	public static function set($name, $value = 1, $time = "+1 hour"): bool {
+	public static function set(string | array $name, mixed $value = 1, mixed $time = "+1 hour"): bool {
 		if($time == false){
 			if($value == 1){ $value = "+1 hour"; } 
 			foreach($name as $key => $val){
@@ -2767,7 +2848,7 @@ class Cookies {
         return true;
 	}
 	
-	public static function delete($name): bool {
+	public static function delete(string | array $name): bool {
 		if(gettype($name) == "array"){
 			for($i = 0; $i < count($name); $i++){
 				Cookies::set($name[$i], "", "-1 hour");                
@@ -2778,13 +2859,19 @@ class Cookies {
         return Cookies::set($name, "", "-1 hour");
 	}
 	
-	public static function exists($name): bool {
+	public static function exists(string $name): bool {
 		if(isset($_COOKIE[$name])){
 			return true;
 		}else return false;
 	}
+
+    public static function get_security(string $name): string | bool {
+        if(Cookies::exists($name) && Cookies::security_check($name)) {
+            return $_COOKIE[$name];
+        } else return false;
+    }
 	
-	public static function security_check($name): bool {
+	public static function security_check(string $name): bool {
 		$security = Cookies::security_get($name);
 		if($security != false){			
 			if(sha1($name.$_COOKIE[$name].self::getSecret()) == $security["hash"])
@@ -2795,7 +2882,7 @@ class Cookies {
             return false;
 	}
 	
-	public static function security_get($name): array | bool {
+	public static function security_get(string $name): array | bool {
 		if(Cookies::exists($name)){
 			$data = explode(";;",$_COOKIE["SECURITY_".$name],3);
 			return array(
@@ -2819,7 +2906,7 @@ class Cookies {
 		}
 	}
 
-	public static function create_ifnotExists($name, $value = "", $time = "+1 hour"): bool {
+	public static function create_ifnotExists(string $name, string $value = "", string $time = "+1 hour"): bool {
 		if(Cookies::exists($name)){
 			return true;
 		}
@@ -2851,9 +2938,9 @@ class Cookies {
 }
 
 class Database {
-    private $connection = null;
+    private ?\PDO $connection = null;
 
-    public function connect($host, $database, $username, $password) {
+    public function connect(string $host, string $database, string $username, string $password) {
         $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -2869,7 +2956,7 @@ class Database {
         return $this->connection;
     }
 
-    public static function getPdoParamType($value): int {
+    public static function getPdoParamType(mixed $value): int {
         if (is_int($value)) {
             return PDO::PARAM_INT;
         }
@@ -3104,10 +3191,16 @@ abstract class Model {
         return $objects;
     }
 
-    public static function where($condition, $params = []): QueryBuilder {
+    /**
+     * @return \QueryBuilder<static>
+     */
+    public static function where(string|array|callable $condition, $params = []): QueryBuilder {
         return self::toQuery()->where($condition, $params);
     }
 
+    /**
+     * @return \QueryBuilder<static>
+     */
     public static function toQuery(): QueryBuilder {
         $definition = self::getTableDefinition();
         return new QueryBuilder(self::getConnection(), $definition->tableName, static::class);
@@ -3327,7 +3420,7 @@ abstract class Model {
         return $this->loadRelationship($relationName);
     }
 
-    public function __call($method, $args) {
+    public function __call(string $method, array $args) {
         $relationships = $this->getRelationships();
     
         if (isset($relationships[$method])) {
@@ -3530,16 +3623,25 @@ class QueryBuilderWhere {
         $this->bindingGenerator = $bindingGenerator;
     }
 
+    /**
+     * @param string|array|Closure(\QueryBuilderWhere): \QueryBuilderWhere $condition
+     */
     public function and(string|array|callable $condition, $params = []): self {
         $this->add('AND', $condition, $params);
         return $this;
     }
 
+    /**
+     * @param string|array|Closure(\QueryBuilderWhere): \QueryBuilderWhere $condition
+     */
     public function or(string|array|callable $condition, $params = []): self {
         $this->add('OR', $condition, $params);
         return $this;
     }
 
+    /**
+     * @param string|array|Closure(\QueryBuilderWhere): \QueryBuilderWhere $condition
+     */
     private function add(string $operator, string|array|callable $condition, $params = []): void {
         $prefix = empty($this->conditions) ? '' : $operator;
 
@@ -3619,7 +3721,7 @@ class QueryBuilderWhere {
 
     public function like(string $column, string $value, DataTableLike $type = DataTableLike::Both, bool $isOr = false): self {
         $mask = match($type) {
-            DataTableLike::Both => "$value%",
+            DataTableLike::Right => "$value%",
             DataTableLike::Left => "%$value",
             default => "%$value%"
         };
@@ -3756,22 +3858,38 @@ class QueryBuilder {
         $this->whereBuilder = new QueryBuilderWhere($this->bindingGenerator);
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function table(string $name): self {
 		$this->table = $name;
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function having(): self{
 		$this->having[] = array("value" => func_get_args());
 		return $this;
 	}
 
+    /**
+     * @param string|array|Closure(\QueryBuilderWhere): \QueryBuilderWhere $condition
+     * 
+     * @return \QueryBuilder<T>
+     */
     public function where(string|array|callable $condition, array $params = []): self {
         $this->whereBuilder->and($condition, $params);
         return $this;
     }
 
-	public function whereOr($condition, $params = []): self {
+    /**
+     * @param string|array|Closure(\QueryBuilderWhere): \QueryBuilderWhere $condition
+     * 
+     * @return \QueryBuilder<T>
+     */
+	public function whereOr(string|array|callable $condition, $params = []): self {
         $this->whereBuilder->or($condition, $params);
         return $this;
 	}
@@ -3779,8 +3897,10 @@ class QueryBuilder {
 	/**
      * replace {table} as name of original table
      * {join} as table name of join
+     * 
+     * @return \QueryBuilder<T>
      */
-    public function join($table, $condition, $name = ""): self {
+    public function join(string $table, string $condition, string $name = ""): self {
 		if($name == "") $name = $table;
         $this->joins[] = array("type" => "LEFT", "table" => $table, "name" => $name, "condition" => $condition);
         return $this;
@@ -3790,33 +3910,50 @@ class QueryBuilder {
 	 * DataTableLike::$BOTH = 0
 	 * DataTableLike::$LEFT = 1
 	 * DataTableLike::$RIGHT = 2
-	 */
-	public function like($column, $value, DataTableLike $type = DataTableLike::Both, $isOr = false): self {
+     * 
+     * @return \QueryBuilder<T>
+     */
+	public function like(string $column, string $value, DataTableLike $type = DataTableLike::Both, bool $isOr = false): self {
         $this->whereBuilder->like($column, $value, $type, $isOr);
         return $this;
     }
 
-	public function likeOr($column, $value, DataTableLike $type = DataTableLike::Both): self {
+    /**
+     * @return \QueryBuilder<T>
+     */
+	public function likeOr(string $column, string $value, DataTableLike $type = DataTableLike::Both): self {
         $this->whereBuilder->like($column, $value, $type, true);
         return $this;
 	}
 
-    public function in($column, array $values): self {
+    /**
+     * @return \QueryBuilder<T>
+     */
+    public function in(string $column, array $values): self {
         $this->whereBuilder->in($column, $values);
         return $this;
     }
 
-    public function inOr($column, array $values): self {
+    /**
+     * @return \QueryBuilder<T>
+     */
+    public function inOr(string $column, array $values): self {
         $this->whereBuilder->in($column, $values, true);
         return $this;
     }
 
-    public function notIn($column, array $values): self {
+    /**
+     * @return \QueryBuilder<T>
+     */
+    public function notIn(string $column, array $values): self {
         $this->whereBuilder->notIn($column, $values);
         return $this;
     }
 
-    public function notInOr($column, array $values): self {
+    /**
+     * @return \QueryBuilder<T>
+     */
+    public function notInOr(string $column, array $values): self {
         $this->whereBuilder->notIn($column, $values, true);
         return $this;
     }
@@ -3895,36 +4032,57 @@ class QueryBuilder {
         }
     }
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function order(string $value): self {
 		$this->orderBy = $value;
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function limit(int $value): self {
 		$this->pageLimit = $value;
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function page(int $value): self {
 		$this->currentPage = $value;
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function takAllFields(): self {
 		$this->takeAllFieldsFromTable = true;
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function item($value, $name = ""): self {
 		$this->items[] = array("value" => $value, "name" => $name, "must" => false);
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function itemMust($value, $name): self {
 		$this->items[] = array("value" => $value, "name" => $name, "must" => true);
 		return $this;
 	}
 
+    /**
+     * @return \QueryBuilder<T>
+     */
 	public function items($items): self{
 		$list = explode(",", $items);
 		foreach($list as $item) {
