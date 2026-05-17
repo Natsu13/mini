@@ -12,23 +12,9 @@ $container = Container::getInstance();
 $page = $container->get(Page::class);
 $router = $container->get(Router::class);
 $layout = $container->get(Layout::class);
-$database = $container->get(Database::class);
 $userService = $container->get(UserService::class);
 $request = $container->get(Request::class);
 $response = $container->get(Response::class);
-$authentificatorProvider = $container->get(AuthentificatorProvider::class);
-
-$auth = (new Authentication())
-    ->setAuthenticationMethods([
-        'cookies' => new CookieAuthentication('session', '+1 day')
-    ])
-    ->setDefaultAuthenticationMethod('cookies')
-    ->setAuthentificationUrl("login/")
-    ->requireAuthentification(true);
-$authentificatorProvider->set($auth);
-
-Date::setTimezoneOffset(1); // +1 Europe/Prague
-$database->connect("127.0.0.1", "mini", "root", "");
 
 $router->add("", "view=index");
 $router->add("login", [Controllers\Login::class]);

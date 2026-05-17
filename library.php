@@ -467,6 +467,237 @@ if (defined("DEBUG")) {
     }
 }
 
+class Config {
+    private array $data = [];
+    private bool $loaded = false;
+
+    public function load(?string $path = null): void {
+        if ($this->loaded) return;
+        
+        $path = $path ?? ROOT . '/config.env';
+        if (defined("DEBUG") && DEBUG === true && file_exists(ROOT . '/config.dev.env')) {
+            $path = ROOT . '/config.dev.env';
+        }
+        if (!file_exists($path)) return;
+
+        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) continue;
+            if (!str_contains($line, '=')) continue;
+            [$key, $value] = explode('=', $line, 2);
+            $value = trim($value);
+            $value = trim($value, '"\'');  // odstraní " i ' z obou stran
+            
+            $this->data[trim($key)] = $value;
+            $_ENV[trim($key)] = $value;
+            putenv(trim($key) . '=' . $value);
+        }
+        $this->loaded = true;
+    }
+
+    public function get(string $key, mixed $default = null): mixed {
+        return $this->data[$key] ?? $default;
+    }
+
+    public function has(string $key): bool {
+        return isset($this->data[$key]);
+    }
+
+    public function all(): array {
+        return $this->data;
+    }
+}
+
+enum ConfigValidatorType {
+    case Number;
+    case PositiveNumber;
+    case NonNegativeNumber;
+    case Boolean;
+    case Email;
+    case Url;
+    case NonEmpty;
+    case Ip;
+    case Port;
+    case DateOffset;
+    case PositiveDateOffset;
+}
+
+class ConfigValidator {
+    public function __construct(
+        public readonly Closure $validate,
+        public readonly ?string $hint = null
+    ) {}
+}
+
+class ConfigBasicValidator {
+    public static function create(ConfigValidatorType $type): ConfigValidator {
+        return match($type) {
+            ConfigValidatorType::Number => new ConfigValidator(
+                fn(string $v) => is_numeric($v),
+                'a numeric value (e.g. 42, 3.14)'
+            ),
+
+            ConfigValidatorType::PositiveNumber => new ConfigValidator(
+                fn(string $v) => is_numeric($v) && (float)$v > 0,
+                'a positive number (e.g. 1, 3.14)'
+            ),
+
+            ConfigValidatorType::NonNegativeNumber => new ConfigValidator(
+                fn(string $v) => is_numeric($v) && (float)$v >= 0,
+                'a non-negative number (e.g. 0, 5)'
+            ),
+
+            ConfigValidatorType::Boolean => new ConfigValidator(
+                fn(string $v) => in_array(strtolower($v), ['true', 'false', '1', '0', 'yes', 'no'], true),
+                'a boolean (true/false, 1/0, yes/no)'
+            ),
+
+            ConfigValidatorType::Email => new ConfigValidator(
+                fn(string $v) => filter_var($v, FILTER_VALIDATE_EMAIL) !== false,
+                'a valid email address (e.g. user@example.com)'
+            ),
+
+            ConfigValidatorType::Url => new ConfigValidator(
+                fn(string $v) => filter_var($v, FILTER_VALIDATE_URL) !== false,
+                'a valid URL (e.g. https://example.com)'
+            ),
+
+            ConfigValidatorType::NonEmpty => new ConfigValidator(
+                fn(string $v) => trim($v) !== '',
+                'a non-empty string'
+            ),
+
+            ConfigValidatorType::Ip => new ConfigValidator(
+                fn(string $v) => filter_var($v, FILTER_VALIDATE_IP) !== false,
+                'a valid IP address (e.g. 127.0.0.1)'
+            ),
+
+            ConfigValidatorType::Port => new ConfigValidator(
+                fn(string $v) => is_numeric($v) && (int)$v >= 1 && (int)$v <= 65535,
+                'a port number between 1 and 65535'
+            ),
+
+            ConfigValidatorType::DateOffset => new ConfigValidator(
+                fn(string $v) => (bool)preg_match(
+                    '/^[+-]?\d+\s*(second|minute|hour|day|week|month|year)s?$/i',
+                    trim($v)
+                ),
+                'a date offset (e.g. +1 day, -2 weeks, 3 months)'
+            ),
+
+            ConfigValidatorType::PositiveDateOffset => new ConfigValidator(
+                fn(string $v) => (bool)preg_match(
+                    '/^\+?\d+\s*(second|minute|hour|day|week|month|year)s?$/i',
+                    trim($v)
+                ),
+                'a positive date offset (e.g. +1 day, 2 weeks)'
+            ),
+        };
+    }
+
+    public static function enum(string ...$allowed): ConfigValidator {
+        return new ConfigValidator(
+            fn(string $v) => in_array($v, $allowed, true),
+            'one of: (' . implode(', ', $allowed).')'
+        );
+    }
+}
+
+class ConfigType {
+    public string $name;
+    public bool $required;
+    public bool $secret;
+    private ?ConfigValidator $validator;
+
+    /**
+     * @param string $name The name of the configuration key.
+     * @param bool $required Whether this configuration key is required.
+     * @param ConfigValidator|null $validator An optional \ConfigValidator that validates the value of the configuration key.
+     */
+    public function __construct(string $name, bool $required = true, bool $secret = false, ?ConfigValidator $validator = null) {
+        $this->name = $name;
+        $this->required = $required;
+        $this->secret = $secret;
+        $this->validator = $validator;
+    }
+
+    public function validate(string $value): bool {
+        if ($this->validator) {
+            return ($this->validator->validate)($value);
+        }
+        return true;
+    }
+
+    public function hint(): ?string {
+        return $this->validator?->hint;
+    }
+}
+
+class ConfigProvider {
+    private Config $config;
+    private array $providers = [];
+
+    public function __construct(Config $config) {
+        $this->config = $config;
+    }
+
+    /**
+     * Registers a handler that will run if all required keys are available.
+     * 
+     * @param array<string|ConfigType>    $requiredKeys  Keys that must exist in the config
+     * @param callable $handler       Callback that will receive the values as an array
+     */
+    public function register(array $requiredKeys, callable $handler): void {
+        $this->providers[] = [
+            'keys'    => $requiredKeys,
+            'handler' => $handler,
+        ];
+    }
+
+    /**
+     * It will run all handlers whose keys are available.
+     * It is called once after loading the config.
+     */
+    public function boot(): void {
+        foreach ($this->providers as $provider) {
+            $values = [];
+            $allPresent = true;
+            
+            foreach ($provider['keys'] as $key) {
+                if ($key instanceof ConfigType) {
+                    $keyName = $key->name;
+                    if (!$this->config->has($keyName)) {
+                        if ($key->required) {
+                            $allPresent = false;
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    $value = $this->config->get($keyName);
+                    if (!$key->validate($value)) {
+                        $valueShow = $key->secret? "******": $value;
+                        $hint = $key->hint() ? " Expected: {$key->hint()}." : '';
+                        throw new Exception("Validation failed for config key '$keyName' with value '$valueShow'.$hint");
+                    }
+                    
+                    $values[$keyName] = $value;
+                } else {
+                     if (!$this->config->has($key)) {
+                        $allPresent = false;
+                        break;
+                    }
+                    $values[$key] = $this->config->get($key);
+                }
+            }
+            if ($allPresent) {
+                ($provider['handler'])($values);
+            }
+        }
+    }
+}
+
 class Utilities {
     public static function vardump($object, $level = 0) {
         echo "<div style='margin-left: " . ($level * 10) . "px;' class='var-dump level-" . $level . "'>";
@@ -816,7 +1047,6 @@ class Paginator {
                     $result[] = ["val" => $i, "type" => PaginatorType::Page];
                 }
             }
-            
             else {
                 $result[] = ["val" => "...", "type" => PaginatorType::Dots];
                 $start = $currentPage - $halfInner;
@@ -993,7 +1223,7 @@ enum Lifetime {
 }
 
 class Container {
-    private static $instance = null;
+    private static ?Container $instance = null;
 
     private $services = [];
     private $instances = [];
@@ -2939,6 +3169,25 @@ class Cookies {
 
 class Database {
     private ?\PDO $connection = null;
+
+    public static function registerConfig(ConfigProvider $configProvider): void {
+        $configProvider->register([
+                'DB_HOST', 
+                'DB_NAME', 
+                'DB_USER', 
+                new ConfigType('DB_PASSWORD', false, true),
+            ],
+            function(array $cfg) {
+                $db = Container::getInstance()->get(Database::class);
+                $db->connect(
+                    $cfg['DB_HOST'],
+                    $cfg['DB_NAME'],
+                    $cfg['DB_USER'],
+                    $cfg['DB_PASS'] ?? ""
+                );
+            }
+        );
+    }
 
     public function connect(string $host, string $database, string $username, string $password) {
         $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
@@ -5002,6 +5251,34 @@ class Authentication {
     private ?string $authentificationUrl = null;
     private bool $needAuthentification = false;
 
+    public static function registerConfig(ConfigProvider $configProvider): void {
+        $configProvider->register([
+                new ConfigType('AUTH_TYPE', true, false, ConfigBasicValidator::enum("cookies")), 
+                new ConfigType('AUTH_COOKIE_NAME', false), 
+                new ConfigType('AUTH_COOKIE_EXPIRATION', false, false, ConfigBasicValidator::create(ConfigValidatorType::PositiveDateOffset)),
+                new ConfigType('AUTH_URL', false),
+                new ConfigType('AUTH_REQUIRED', false, false, ConfigBasicValidator::create(ConfigValidatorType::Boolean))
+            ],
+            function(array $cfg) {
+                $authentificatorProvider = Container::getInstance()->get(AuthentificatorProvider::class);
+                
+                $type = $cfg["AUTH_TYPE"];
+                if($type == "cookies") {
+                    $auth = (new Authentication())
+                        ->setAuthenticationMethods([
+                            'cookies' => new CookieAuthentication('session', isset($cfg["AUTH_COOKIE_EXPIRATION"]) && $cfg["AUTH_COOKIE_EXPIRATION"] != ""? $cfg["AUTH_COOKIE_EXPIRATION"]: '+1 day')
+                        ])
+                        ->setDefaultAuthenticationMethod('cookies')
+                        ->setAuthentificationUrl(isset($cfg["AUTH_URL"]) && $cfg["AUTH_URL"] != ""?  $cfg["AUTH_URL"]: "login/")
+                        ->requireAuthentification(isset($cfg["AUTH_REQUIRED"]) && $cfg["AUTH_REQUIRED"] != ""? boolval($cfg["AUTH_REQUIRED"]): true);
+                    $authentificatorProvider->set($auth);
+                }else{
+                    throw new Exception("Unknown authentificator type: {$type}");
+                }
+            }
+        );
+    }
+
     /**
      * @param array<string, AuthenticationMethod> $methods
      */
@@ -5526,6 +5803,8 @@ if(!defined("CACHE")) {
 }
 
 $container = Container::getInstance();
+$container->setSingleton(ConfigProvider::class);
+$container->setSingleton(Config::class);
 $container->setSingleton(Autoload::class);
 $container->setSingleton(Router::class);
 $container->setSingleton(Page::class);
@@ -5539,9 +5818,20 @@ if(defined("USE_USERS")) {
     $container->setSingleton(UserService::class);
 }
 
+$container->get(Config::class)->load(defined("CONFIG_PATH")? CONFIG_PATH: null);
+$configProvider = $container->get(ConfigProvider::class);
+
+/* Basic config */
+$configProvider->register(['TIME_ZONE'], function(array $cfg) {
+    Date::setTimezoneOffset($cfg['TIME_ZONE']);
+});
+Database::registerConfig($configProvider);
+Authentication::registerConfig($configProvider);
+
 if(defined("USE_EXCEPTION_HANDLER")) {
     $container->setSingleton(GlobalErrorHandler::class);
     $container->get(GlobalErrorHandler::class)->register();
 }
 
+$configProvider->boot();
 $container->get(Autoload::class)->register();
