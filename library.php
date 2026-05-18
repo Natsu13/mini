@@ -474,9 +474,9 @@ class Config {
     public function load(?string $path = null): void {
         if ($this->loaded) return;
         
-        $path = $path ?? ROOT . '/config.env';
-        if (defined("DEBUG") && DEBUG === true && file_exists(ROOT . '/config.dev.env')) {
-            $path = ROOT . '/config.dev.env';
+        $path = $path ?? ROOT . '/.env';
+        if (defined("DEBUG") && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
+            $path = ROOT . '/.env.dev';
         }
         if (!file_exists($path)) return;
 
@@ -486,7 +486,7 @@ class Config {
             if (!str_contains($line, '=')) continue;
             [$key, $value] = explode('=', $line, 2);
             $value = trim($value);
-            $value = trim($value, '"\'');  // odstraní " i ' z obou stran
+            $value = trim($value, '"\'');
             
             $this->data[trim($key)] = $value;
             $_ENV[trim($key)] = $value;

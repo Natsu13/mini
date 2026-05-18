@@ -1,4 +1,5 @@
-config.env
+.env
+.env.dev
 /favicon.ico
 /temp
 routes.cache.json
