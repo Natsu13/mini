@@ -1,5 +1,8 @@
 .env
+.env.encrypted
 .env.dev
+.env.dev.encrypted
+.key
 /favicon.ico
 /temp
 routes.cache.json

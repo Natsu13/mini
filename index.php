@@ -1,6 +1,10 @@
 <?php
 define("DEBUG", true);
+define("APP_KEY", "strong-key-123");
+
 require_once "./library.php";
+
+DebugTimer::start("core");
 
 ob_start();
 
@@ -8,6 +12,13 @@ use Models\User;
 use Models\Article;
 
 $container = Container::getInstance();
+
+$config = $container->get(Config::class);
+if(isset($_GET["encrypt"]) && defined("APP_KEY")) {
+    $config->encrypt(key: APP_KEY);
+    echo "Config was encrypted!";
+    exit();
+}
 
 $page = $container->get(Page::class);
 $router = $container->get(Router::class);
@@ -42,13 +53,16 @@ $router->start();
 
 echo "<html>";
     $page->head();
-    echo "<body>";
-        //DebugTimer::dump();
+    echo "<body>";        
+
+        DebugTimer::start("page.draw");
 
         if (!$router->tryProcessController()) {
             $router->redirectToLoginIfNeeded();
 
             $user = $userService->current();
+
+            DebugTimer::start("page.logic");
 
             $builder = User::where(fn($w) => $w->and("login", "admin")->and("id = :id", [":id" => 1]))->limit(10);
 
@@ -72,6 +86,8 @@ echo "<html>";
                 "sql" => \Model::generateCreateTableQuery(User::class),
                 "action" => "none"                
             ];
+
+            DebugTimer::stop("page.logic");
 
             if ($_GET["view"] == "article" && $_GET["action"] == "new") {
                 if (isset($_POST["title"])) {
@@ -112,11 +128,16 @@ echo "<html>";
                 $article->delete();
                 $router->redirect("/");
             } else {
-                $layout->render(ROOT . "/views/index.view", $model);
+                $layout->render(ROOT . "/views/index.view", $model);                
             }
         }
         $page->footer();        
+
+        DebugTimer::stop("page.draw");
     echo "</body>";
 echo "</html>";
+
+DebugTimer::stop("core");
+DebugTimer::dump();
 
 ob_end_flush();

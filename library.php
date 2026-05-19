@@ -20,6 +20,7 @@ class Autoload {
     private array $classMap = [];
     private array $loadedFiles = [];
     private array $libraryPaths = [];
+    private bool $needSave = false;
 
     public function __construct() {
         $this->cacheFile = __DIR__ . '/autoload.cache.json';
@@ -35,7 +36,12 @@ class Autoload {
         }
     }
 
-    private function saveCache(): void {
+    private function saveCache(bool $force = false): void {
+        if(!$force) {
+            if(!$this->needSave)
+                return;
+            $this->needSave = false;
+        }        
         $currentCache = [];
         if (file_exists($this->cacheFile)) {
             $content = file_get_contents($this->cacheFile);
@@ -79,6 +85,7 @@ class Autoload {
 
     public function register(): void {
         spl_autoload_register([$this, 'loadClass'], /* throw = */ true, /* prepend = */ false);
+        register_shutdown_function([$this, 'saveCache']);
     }
 
     /**
@@ -98,10 +105,9 @@ class Autoload {
 
         $namespace = trim($namespace, '\\');
         $path = rtrim($path, '/\\');
-
-        $this->loadCache();
+        
         $this->libraryPaths[$namespace] = $path;
-        $this->saveCache();
+        $this->needSave = true;
     }
 
     /**
@@ -125,8 +131,6 @@ class Autoload {
     }
 
     public function loadClass(string $class): void {
-        $this->loadCache();
-
         if (isset($this->classMap[$class])) {
             $file = $this->classMap[$class];
             if (!in_array($file, $this->loadedFiles, true)) {
@@ -136,7 +140,7 @@ class Autoload {
                     return;
                 } else {
                     unset($this->classMap[$class]);
-                    $this->saveCache();
+                    $this->needSave = true;
                 }
             }            
         }
@@ -170,7 +174,7 @@ class Autoload {
         }
 
         if ($hasNewClasses) {
-            $this->saveCache();
+            $this->needSave = true;
         }
 
         if (!in_array($class, $newClasses, true)
@@ -182,13 +186,11 @@ class Autoload {
     }
 
     public function addClass(string $class, string $file): void {
-        $this->loadCache();
         $this->classMap[$class] = $file;
-        $this->saveCache();
+        $this->needSave = true;
     }
 
     public function cleanCache(): void {
-        $this->loadCache();
         $cleaned = false;
         
         foreach ($this->classMap as $class => $file) {
@@ -199,17 +201,15 @@ class Autoload {
         }
         
         if ($cleaned) {
-            $this->saveCache();
+            $this->saveCache(true);
         }
     }
 
     public function getClassMap(): array {
-        $this->loadCache();
         return $this->classMap;
     }
 
     public function getLibraryPaths(): array {
-        $this->loadCache();
         return $this->libraryPaths;
     }
 
@@ -217,16 +217,14 @@ class Autoload {
      * Odstraní knihovnu z registrovaných cest
      */
     public function removeLib(string $namespace): void {
-        $this->loadCache();
         unset($this->libraryPaths[$namespace]);
-        $this->saveCache();
+        $this->needSave = true;
     }
 
     /**
      * Debug metoda - ukáže kde hledá soubor pro danou třídu
      */
     public function debugClass(string $class): array {
-        $this->loadCache();
         $debug = [
             'class' => $class,
             'in_cache' => isset($this->classMap[$class]),
@@ -407,23 +405,45 @@ class DocParser {
 if (defined("DEBUG")) {
     class DebugTimer {
         private static array $records = [];
+        // Stack of currently active timer names (for nesting detection)
+        private static array $activeStack = [];
 
         public static function start(string $name): void {
-            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 1)[0];
-            $file = $backtrace['file'] ?? 'unknown';
-            $line = $backtrace['line'] ?? 0;
+            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
+            $caller = $backtrace[0] ?? [];
+            $file = basename($caller['file'] ?? 'unknown');
+            $line = $caller['line'] ?? 0;
+
+            // Determine parent from the current active stack
+            $parent = !empty(self::$activeStack) ? end(self::$activeStack) : null;
 
             self::$records[$name][] = [
-                'start' => microtime(true),
-                'stop'  => null,
-                'file'  => $file,
-                'line'  => $line,
+                'start'    => microtime(true),
+                'stop'     => null,
+                'file'     => $file,
+                'line'     => $line,
+                'parent'   => $parent,
+                'children' => [],
             ];
+
+            // Register this timer as a child of its parent's latest entry
+            if ($parent !== null && isset(self::$records[$parent])) {
+                $parentIdx = count(self::$records[$parent]) - 1;
+                self::$records[$parent][$parentIdx]['children'][] = $name;
+            }
+
+            self::$activeStack[] = $name;
         }
 
         public static function stop(string $name): float {
-            if (!isset(self::$records[$name]) || empty(self::$records[$name])) {
-                throw new Exception("Timer '$name' was not started.");
+            if (empty(self::$records[$name])) {
+                throw new \Exception("Timer '$name' was not started.");
+            }
+
+            // Pop name from the active stack (handle out-of-order stops gracefully)
+            $pos = array_search($name, self::$activeStack, true);
+            if ($pos !== false) {
+                array_splice(self::$activeStack, $pos, 1);
             }
 
             for ($i = count(self::$records[$name]) - 1; $i >= 0; $i--) {
@@ -433,66 +453,264 @@ if (defined("DEBUG")) {
                 }
             }
 
-            throw new Exception("No running timer found for '$name'.");
+            throw new \Exception("No running timer found for '$name'.");
+        }
+
+        // Return elapsed ms for a running timer without stopping it
+        public static function peek(string $name): ?float {
+            if (empty(self::$records[$name])) return null;
+            foreach (array_reverse(self::$records[$name]) as $entry) {
+                if ($entry['stop'] === null) {
+                    return (microtime(true) - $entry['start']) * 1000;
+                }
+            }
+            return null;
         }
 
         public static function dump(int $precision = 4): void {
-            echo "<pre>🕒 Debugging Timers:\n";
+            // Collect root timers (no parent) preserving insertion order
+            $roots = [];
+            $seen  = [];
             foreach (self::$records as $name => $entries) {
-                echo "Timer: $name\n";
-                foreach ($entries as $index => $data) {
-                    $start = date("H:i:s", (int)$data['start']);
-                    $duration = $data['stop']
-                        ? round($data['stop'] - $data['start'], $precision)
-                        : "(still running)";
-                    echo sprintf(
-                        "  #%d → %s:%d | Start: %s | Duration: %s sec\n",
-                        $index + 1,
-                        $data['file'],
-                        $data['line'],
-                        $start,
-                        $duration
-                    );
+                foreach ($entries as $entry) {
+                    if ($entry['parent'] === null && !in_array($name, $seen, true)) {
+                        $roots[] = $name;
+                        $seen[]  = $name;
+                    }
                 }
-                echo "\n";
             }
-            echo "</pre>";
+
+            $totalMs = 0.0;
+            foreach ($roots as $name) {
+                foreach (self::$records[$name] as $entry) {
+                    if ($entry['stop'] !== null) {
+                        $totalMs += ($entry['stop'] - $entry['start']) * 1000;
+                    }
+                }
+            }
+
+            echo '<div style="font-family:monospace;font-size:13px;background:#1a1a1a;color:#e0e0e0;'
+               . 'padding:16px 20px;border-radius:8px;line-height:1.7;max-width:900px;margin:10px 0">';
+            echo '<div style="font-size:15px;font-weight:bold;margin-bottom:12px;color:#f0c040">'
+               . '⏱ Debug Timers &nbsp;<span style="font-size:12px;font-weight:normal;color:#888">'
+               . 'total root time: ' . round($totalMs, $precision) . ' ms</span></div>';
+
+            foreach ($roots as $name) {
+                self::renderTimer($name, 0, $precision);
+            }
+
+            echo '</div>';
+        }
+
+        private static function renderTimer(string $name, int $depth, int $precision): void {
+            if (!isset(self::$records[$name])) return;
+
+            $indent = str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', $depth);
+            $isRoot = $depth === 0;
+
+            foreach (self::$records[$name] as $runIdx => $entry) {
+                $durationMs = $entry['stop']
+                    ? round(($entry['stop'] - $entry['start']) * 1000, $precision)
+                    : null;
+
+                $durationStr = $durationMs !== null
+                    ? self::coloredDuration($durationMs)
+                    : '<span style="color:#f0a040">(still running)</span>';
+
+                $startStr = date('H:i:s', (int)$entry['start'])
+                          . substr(number_format(fmod($entry['start'], 1), 3), 1); // .milliseconds
+
+                $label = $isRoot
+                    ? "<span style=\"color:#7ec8f5;font-weight:bold\">$name</span>"
+                    : "<span style=\"color:#b0d8a4\">$name</span>";
+
+                $run = count(self::$records[$name]) > 1
+                    ? "<span style=\"color:#666\"> #" . ($runIdx + 1) . "</span>"
+                    : '';
+
+                $meta = "<span style=\"color:#555\">{$entry['file']}:{$entry['line']}</span>";
+
+                echo "$indent$label$run &nbsp;$durationStr"
+                   . " &nbsp;<span style=\"color:#444\">@ $startStr &nbsp;$meta</span><br>";
+
+                // Recursively render children
+                foreach ($entry['children'] as $childName) {
+                    self::renderTimer($childName, $depth + 1, $precision);
+                }
+            }
+        }
+
+        private static function coloredDuration(float $ms): string {
+            if ($ms < 5)   return "<span style=\"color:#5dca82\">{$ms} ms</span>";
+            if ($ms < 50)  return "<span style=\"color:#c8e04a\">{$ms} ms</span>";
+            if ($ms < 200) return "<span style=\"color:#f0a040\">{$ms} ms</span>";
+            return             "<span style=\"color:#e05050;font-weight:bold\">{$ms} ms</span>";
+        }
+
+        public static function reset(): void {
+            self::$records     = [];
+            self::$activeStack = [];
         }
     }
 } else {
+    define("START_TIMER", microtime(true));
+
     class DebugTimer {
         public static function start(string $name): void {}
         public static function stop(string $name): float { return 0.0; }
-        public static function dump(int $precision = 4): void {}
+        public static function peek(string $name): ?float { return null; }
+        
+        public static function dump(int $precision = 4): void {
+            $totalTime = microtime(true) - START_TIMER;
+            $formattedTime = number_format($totalTime, $precision) * 1000;
+            
+            echo '<div style="font-family:monospace;font-size:13px;background:#1a1a1a;color:#e0e0e0;'
+               . 'padding:16px 20px;border-radius:8px;line-height:1.7;max-width:900px;margin:10px 0">';
+            echo '<div style="font-size:15px;font-weight:bold;color:#f0c040">'
+               . '⏱ Total time wihout debug &nbsp;<span style="font-size:12px;font-weight:normal;color:#888">'
+               . 'total root time: ' . $formattedTime . ' ms</span></div>';
+            echo "</div>";
+        }
+        
+        public static function reset(): void {}
     }
 }
+
+DebugTimer::start("library");
 
 class Config {
     private array $data = [];
     private bool $loaded = false;
 
-    public function load(?string $path = null): void {
+    // Priority: 1) argument, 2) DEFINE, 3) $_ENV/getenv, 4) .key file (just when debug)
+    private function resolveKey(): ?string {
+        if (defined('APP_KEY')) {
+            return APP_KEY;
+        }
+
+        $envKey = getenv('APP_KEY') ?: ($_ENV['APP_KEY'] ?? null);
+        if ($envKey) {
+            return $envKey;
+        }
+
+        if (defined('DEBUG') && DEBUG === true) {
+            $keyFile = ROOT . '/.key';
+            if (file_exists($keyFile)) {
+                return trim(file_get_contents($keyFile));
+            }
+        }
+
+        return null;
+    }
+
+    public function load(?string $path = null, ?string $key = null): void {
         if ($this->loaded) return;
-        
+
+        DebugTimer::start("config.load");
+
         $path = $path ?? ROOT . '/.env';
-        if (defined("DEBUG") && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
+        if (defined('DEBUG') && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
             $path = ROOT . '/.env.dev';
         }
-        if (!file_exists($path)) return;
 
-        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $encryptedPath = $path . '.encrypted';
+        $useEncrypted = file_exists($encryptedPath);
+
+        if ($useEncrypted) {
+            $resolvedKey = $key ?? $this->resolveKey();
+            if ($resolvedKey === null) {
+                throw new \RuntimeException(
+                    "Encrypted .env found but no decryption key available. " .
+                    "Set APP_KEY via define(), environment variable, or .key file (debug only)."
+                );
+            }
+            $lines = $this->decryptEnv($encryptedPath, $resolvedKey);
+        } elseif (file_exists($path)) {
+            $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        } else {
+            return;
+        }
+
+        foreach ($lines as $line) {
             $line = trim($line);
             if ($line === '' || str_starts_with($line, '#')) continue;
             if (!str_contains($line, '=')) continue;
-            [$key, $value] = explode('=', $line, 2);
-            $value = trim($value);
-            $value = trim($value, '"\'');
-            
-            $this->data[trim($key)] = $value;
-            $_ENV[trim($key)] = $value;
-            putenv(trim($key) . '=' . $value);
+            [$k, $v] = explode('=', $line, 2);
+            $v = trim(trim($v), '"\'');
+            $k = trim($k);
+
+            $this->data[$k] = $v;
+            $_ENV[$k] = $v;
+            if(function_exists("putenv")) {
+                @putenv("$k=$v");
+            }
         }
         $this->loaded = true;
+
+        DebugTimer::stop("config.load");
+    }
+
+    /** 
+     * Encrypt the .env file
+     */
+    public function encrypt(?string $path = null, ?string $key = null): void {
+        $path = $path ?? ROOT . '/.env';
+        if (defined('DEBUG') && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
+            $path = ROOT . '/.env.dev';
+        }
+
+        if (!file_exists($path)) {
+            throw new \RuntimeException("Source file not found: $path");
+        }
+
+        $resolvedKey = $key ?? $this->resolveKey();
+        if ($resolvedKey === null) {
+            throw new \RuntimeException("No encryption key available.");
+        }
+
+        $plaintext = file_get_contents($path);
+        $encryptedPath = $path . '.encrypted';
+
+        // Derive 256-bit key from whatever string was passed
+        $binaryKey = $this->deriveKey($resolvedKey);
+
+        $iv = random_bytes(16); // AES-256-CBC IV
+        $ciphertext = openssl_encrypt($plaintext, 'AES-256-CBC', $binaryKey, OPENSSL_RAW_DATA, $iv);
+        $hmac = hash_hmac('sha256', $iv . $ciphertext, $binaryKey, true);
+
+        // Format: hmac(32) + iv(16) + ciphertext
+        file_put_contents($encryptedPath, base64_encode($hmac . $iv . $ciphertext));
+    }
+
+    private function decryptEnv(string $encryptedPath, string $key): array {
+        $binaryKey = $this->deriveKey($key);
+        $raw = base64_decode(file_get_contents($encryptedPath));
+
+        if (strlen($raw) < 48) { // 32 hmac + 16 iv minimum
+            throw new \RuntimeException("Invalid encrypted env file.");
+        }
+
+        $hmac       = substr($raw, 0, 32);
+        $iv         = substr($raw, 32, 16);
+        $ciphertext = substr($raw, 48);
+
+        // Check integrity (timing-safe)
+        $expectedHmac = hash_hmac('sha256', $iv . $ciphertext, $binaryKey, true);
+        if (!hash_equals($expectedHmac, $hmac)) {
+            throw new \RuntimeException("Decryption failed: invalid key or corrupted file.");
+        }
+
+        $plaintext = openssl_decrypt($ciphertext, 'AES-256-CBC', $binaryKey, OPENSSL_RAW_DATA, $iv);
+        if ($plaintext === false) {
+            throw new \RuntimeException("Decryption failed.");
+        }
+
+        return explode("\n", $plaintext);
+    }
+
+    private function deriveKey(string $key): string {
+        // HKDF-like derivation – from any string make 32 bytes
+        return hash_hkdf('sha256', $key, 32, 'config-encryption');
     }
 
     public function get(string $key, mixed $default = null): mixed {
@@ -659,6 +877,8 @@ class ConfigProvider {
      * It is called once after loading the config.
      */
     public function boot(): void {
+        DebugTimer::start("config.provider.boot");
+
         foreach ($this->providers as $provider) {
             $values = [];
             $allPresent = true;
@@ -695,6 +915,8 @@ class ConfigProvider {
                 ($provider['handler'])($values);
             }
         }
+
+        DebugTimer::stop("config.provider.boot");
     }
 }
 
@@ -1395,7 +1617,10 @@ class Router {
         $this->layout = $layout;
         $this->request = $request;
         $this->authenticationProvider = $authenticationProvider;
+
+        DebugTimer::start('router.controller.glob');
         $this->controllers = glob("controllers/*.php");
+        DebugTimer::stop('router.controller.glob');
 
         $this->loadRoutes();
     }
@@ -1430,7 +1655,7 @@ class Router {
         }
     }
 
-    private function saveCache($routes) {
+    private function saveCache(array $routes) {
         $hashes = [];
         foreach ($this->controllers as $file) {
             $path = str_replace('\\', '/', $file);
@@ -1518,26 +1743,34 @@ class Router {
     public static function url(bool $full = false, bool $_request = false): string {
         $url = $_GET['url'] ?? '';
         $url = trim($url, '/');
-        $requestUri = $_SERVER['REQUEST_URI'];
-        $requestUri = rtrim($requestUri, '/') . '/';
+        
+        if (isset($_SERVER['SCRIPT_NAME'])) {
+            $scriptDir = trim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+            if ($scriptDir !== '' && str_starts_with($url, $scriptDir)) {
+                $url = substr($url, strlen($scriptDir));
+                $url = trim($url, '/');
+            }
+        }
 
+        $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
         $http = $_SERVER['REQUEST_SCHEME'] ?? 'http';
-        $requestParts = explode('?', $requestUri);
-        $requestPath = $requestParts[0];
         $port = self::getPort();
-
+        
+        $requestParts = explode('?', $requestUri);
+        $requestPath = rtrim($requestParts[0], '/') . '/';
+        
         if ($full) {
             $query = $_request && isset($requestParts[1]) ? '?' . $requestParts[1] : '';
             $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}{$query}";
         } else {
             if ($url !== '' && str_ends_with(trim($requestPath, '/'), $url)) {
                 $basePath = preg_replace('#' . preg_quote($url, '#') . '/?$#', '', trim($requestPath, '/'));
-                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}/{$basePath}";
+                $basePath = trim($basePath, '/');
+                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}/" . ($basePath !== '' ? $basePath . '/' : '');
             } else {
                 $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}";
             }
         }
-
         return rtrim($ret, '/');
     }
 
@@ -1587,6 +1820,8 @@ class Router {
     }
 
     public function start(): void {
+        DebugTimer::start("router.start");
+
         $url = $this->getCurrentUrl();
         $this->matchedUrl = $url;
 
@@ -1628,6 +1863,8 @@ class Router {
                 break;
             }
         }
+
+        DebugTimer::stop("router.start");
     }
 
     private function processVariables($variables) {
@@ -1808,7 +2045,7 @@ class Router {
         }
     }
 
-    public function needAuthentification(ReflectionMethod $reflectionMethod): bool {
+    public function needAuthentification(ReflectionMethod $reflectionMethod): bool {        
         $allowAnonymous = false;
 
         $docComment = (new ReflectionClass($reflectionMethod->class))->getDocComment();
@@ -1899,9 +2136,32 @@ class Router {
         ];
     }
 
-    private function getCurrentUrl(): string {
-        $url = $_GET['url'] ?? '';
-        return trim($url, '/');
+    public function getCurrentUrl(): string {
+        if (isset($_GET['url'])) {
+            $url = trim($_GET['url'], '/');
+            
+            if (isset($_SERVER['SCRIPT_NAME'])) {
+                $scriptDir = trim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+                if ($scriptDir !== '' && str_starts_with($url, $scriptDir)) {
+                    $url = substr($url, strlen($scriptDir));
+                    $url = trim($url, '/');
+                }
+            }
+            
+            return $url;
+        }
+        
+        $requestUri = $_SERVER['REQUEST_URI'] ?? '';
+        $scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
+        
+        $path = explode('?', $requestUri)[0];
+        $base = dirname($scriptName);
+        
+        if (strpos($path, $base) === 0) {
+            $path = substr($path, strlen($base));
+        }
+        
+        return trim($path, '/');
     }
 
     private function matchRoute(string $url, array $route, int $key): bool {
@@ -1964,13 +2224,13 @@ class Router {
 
     private function generateBaseUrl(): string {
         $protocol = $_SERVER['REQUEST_SCHEME'] ?? 'http';
-        $host = $_SERVER['SERVER_NAME'];
+        $host = $_SERVER['SERVER_NAME'] ?? '';
         $port = self::getPort();
         return "{$protocol}://{$host}{$port}";
     }
 
     public function dump(): void {
-        echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl) . '</div>';
+        echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl??"") . ' >>>> currl="'.$this->getCurrentUrl().'" >>>> url="'.$_GET["url"].'"</div>';
         echo "<div style='padding:7px;'>";
         foreach($this->procesed as $p) {
             echo "<div>$p</div>";
@@ -2126,7 +2386,7 @@ class Layout {
     public function render(string $filename, mixed $model = NULL, bool $onlycompile = false, &$outputFile = null): bool {		
 		if (!file_exists($filename)) {
 			throw new Exception("Failed to load template \"".$filename."\"");
-		}	
+		}	        
 
 		$name = pathinfo($filename, PATHINFO_FILENAME);
 		$content = file_get_contents($filename);
@@ -2145,13 +2405,21 @@ class Layout {
 			return false;
 		}
 
+        DebugTimer::start("layout.render.parse." . $name);
+
 		$template = new TemplaterV2($content, $filename);
 		$template->process();
 		$out = $template->getOutput();
 
 		file_put_contents($file, $out);
-		if(!$onlycompile)
+
+        DebugTimer::stop("layout.render.parse." . $name);
+
+		if(!$onlycompile) {
+            DebugTimer::start("layout.render.include." . $name);
 			include($file);
+            DebugTimer::stop("layout.render.include." . $name);
+        }
 
 		return true;
 	}
@@ -3175,7 +3443,7 @@ class Database {
                 'DB_HOST', 
                 'DB_NAME', 
                 'DB_USER', 
-                new ConfigType('DB_PASSWORD', false, true),
+                new ConfigType('DB_PASS', false, true),
             ],
             function(array $cfg) {
                 $db = Container::getInstance()->get(Database::class);
@@ -3190,12 +3458,14 @@ class Database {
     }
 
     public function connect(string $host, string $database, string $username, string $password) {
+        DebugTimer::start("database.connect");
         $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
         ]);
         $this->connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        DebugTimer::stop("database.connect");
     }
 
     public function getConnection(): PDO {
@@ -5835,3 +6105,5 @@ if(defined("USE_EXCEPTION_HANDLER")) {
 
 $configProvider->boot();
 $container->get(Autoload::class)->register();
+
+DebugTimer::stop("library");
