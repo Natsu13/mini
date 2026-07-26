@@ -2395,6 +2395,7 @@ class Layout {
 			$hash = 'debug';
 		}
 		
+        $layoutHash = $name.".".$hash;
 		$file = ROOT."/temp/templates/".$name.".".$hash.".template.php";
 		$outputFile = $file;
 
@@ -2405,7 +2406,8 @@ class Layout {
 			return false;
 		}
 
-        DebugTimer::start("layout.render.parse." . $name);
+        $fileNameDot = str_replace(["/", "\\"], ".", rtrim(ltrim(str_replace(ROOT, "", $filename), "/"), ".view"));
+        DebugTimer::start("layout.render.parse." . $fileNameDot);
 
 		$template = new TemplaterV2($content, $filename);
 		$template->process();
@@ -2413,12 +2415,12 @@ class Layout {
 
 		file_put_contents($file, $out);
 
-        DebugTimer::stop("layout.render.parse." . $name);
+        DebugTimer::stop("layout.render.parse." . $fileNameDot);
 
 		if(!$onlycompile) {
-            DebugTimer::start("layout.render.include." . $name);
+            DebugTimer::start("layout.render.include." . $fileNameDot);
 			include($file);
-            DebugTimer::stop("layout.render.include." . $name);
+            DebugTimer::stop("layout.render.include." . $fileNameDot);
         }
 
 		return true;
@@ -4179,6 +4181,12 @@ class QueryBuilderWhere {
             foreach ($condition as $key => $val) {
                 $bindName = $this->bindingGenerator->generateBindName();
                 $compare = ($val === null) ? "IS" : "=";
+
+                $last1part = substr($key, -1);
+                if(in_array($last1part, [">", "<"])) {
+                    $compare = $last1part;
+                    $key = trim(substr($key, 0, -1));
+                }
 
                 $last2part = substr($key, -2);
                 if (in_array($last2part, ["<>", "!=", "<=", ">="])) {
