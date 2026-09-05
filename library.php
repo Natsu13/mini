@@ -921,72 +921,110 @@ class ConfigProvider {
 }
 
 class Utilities {
-    public static function vardump($object, $level = 0) {
-        echo "<div style='margin-left: " . ($level * 10) . "px;' class='var-dump level-" . $level . "'>";
-        $move = 0;
-        if (is_array($object)) {
-            echo "<div class=type>array(" . count($object) . ")</div>";
-            $move = 10;
-
-            foreach ($object as $n => $o) {
-                echo "<div class=prop style='padding-left: " . $move . "px;'><span class=name>";
-                if (is_numeric($n)) {
-                    echo $n;
-                } else {
-                    echo "'" . $n . "'";
-                }
-                echo "</span> => ";
-                if (is_null($o)) {
-                    echo "<span class=typev>NULL</span> ";
-                } else if (is_array($o)) {
-                    Utilities::vardump($o, $level + 1);
-                } else if (is_object($o)) {
-                    Utilities::vardump($o, $level + 1);
-                } else {
-                    $type = gettype($o);
-                    echo "<span class=typev>" . $type . "</span> ";
-                    echo "<span class='value type-" . $type . "'>";
-                    if ($type == "string") {
-                        echo "'" . htmlentities($o) . "'";
-                    } else if ($type == "boolean") {
-                        if ($o == true) {
-                            echo "true";
-                        } else {
-                            echo "false";
-                        }
-                    } else {
-                        echo $o;
-                    }
-                    echo "</span>";
-                    if ($type == "string") {
-                        echo " <span class=string-len>(length=" . strlen($o) . ")</span>";
-                    }
-                }
-                echo "</div>";
+    /**
+     * @var SplObjectStorage<object, null>|null Tracks objects already visited
+     * during the current top-level dump, to guard against infinite recursion
+     * on circular references.
+     */
+    private static ?SplObjectStorage $seen = null;
+ 
+    /** @var bool Whether the <style> block has already been printed during this request */
+    private static bool $debugStylesPrinted = false; 
+    private const DEBUG_STYLES = '<style>.var-dump{--vd-bg:#10121a;--vd-border:#262b3d;--vd-text:#d7dae5;--vd-muted:#6b7280;--vd-key:#8fb8ff;--vd-string:#f2b866;--vd-number:#6ee7c8;--vd-bool:#c792ea;background:var(--vd-bg);color:var(--vd-text);font-family:"JetBrains Mono","Fira Code",ui-monospace,SFMono-Regular,monospace;font-size:13px;line-height:1.6;padding:14px 16px;border-radius:6px;overflow-x:auto}.var-dump summary.type{cursor:pointer;list-style:none;color:var(--vd-muted);font-weight:600;padding:2px 0}.var-dump summary.type::-webkit-details-marker{display:none}.var-dump summary.type::before{content:"▸";display:inline-block;width:1em;color:var(--vd-muted);transition:transform .12s ease;position: relative;top: 1px;}.var-dump details[open]>summary.type::before{transform:rotate(90deg)}.var-dump summary.type-array{color:#7aa8f7}.var-dump summary.type-object{color:#7ee0c3}.var-dump .children{margin-left:.9em;padding-left:.9em;border-left:1px solid var(--vd-border)}.var-dump .prop{padding:1px 0}.var-dump .name{color:var(--vd-key)}.var-dump .typev{color:var(--vd-muted);font-style:italic;margin-right:2px}.var-dump .value.type-string{color:var(--vd-string)}.var-dump .value.type-integer,.var-dump .value.type-double{color:var(--vd-number)}.var-dump .value.type-boolean{color:var(--vd-bool)}.var-dump .string-len{color:var(--vd-muted);font-size:11px}</style>';
+ 
+    public static function vardump(mixed $value, int $level = 0): void
+    {
+        // Only the outermost call resets the "seen objects" tracker and wraps the output.
+        if ($level === 0) {
+            self::$seen = new SplObjectStorage();
+ 
+            // The style block is only printed once per request, even if vardump()
+            // is called multiple times across the same PHP file.
+            if (!self::$debugStylesPrinted) {
+                echo self::DEBUG_STYLES;
+                self::$debugStylesPrinted = true;
             }
-        } else if ($object != null) {
-            echo "<div class=prop style='padding-left: " . $move . "px;'><span class=name>";
-            $type = gettype($object);
-            echo "<span class=typev>" . $type . "</span> ";
-            echo "<span class='value type-" . $type . "'>";
-            if ($type == "string") {
-                echo "'" . htmlentities($object) . "'";
-            } else if(!is_object($object)) {
-                echo $object;
-            }else {
-                Utilities::vardump(get_object_vars($object));
-            }
-            echo "</span>";
-            if ($type == "string") {
-                echo " <span class=string-len>(length=" . strlen($object) . ")</span>";
-            }
+ 
+            echo "<div class='var-dump'>";
+        }
+ 
+        if (is_array($value)) {
+            self::dumpEntries($value, "array(" . count($value) . ")", "array", $level);
+        } elseif (is_object($value)) {
+            self::dumpObject($value, $level);
+        } elseif ($value !== null) {
+            echo "<div class=prop>";
+            self::dumpScalar($value);
             echo "</div>";
         } else {
-            echo "<div class=prop style='padding-left: " . $move . "px;'><span class=name>";
-            echo "<span class=typev>NULL</span>";
+            echo "<div class=prop><span class=typev>NULL</span></div>";
+        }
+ 
+        if ($level === 0) {
             echo "</div>";
         }
+    }
+ 
+    private static function dumpObject(object $object, int $level): void
+    {
+        $class = get_class($object);
+ 
+        if (self::$seen->offsetExists($object)) {
+            echo "<div class=type>object($class) *RECURSION*</div>";
+            return;
+        }
+        self::$seen->offsetSet($object, null);
+ 
+        $props = get_object_vars($object);
+        self::dumpEntries($props, "object($class)(" . count($props) . ")", "object", $level);
+    }
+ 
+    // $kind is "array" or "object", used as a CSS class so the two can be colored differently
+    private static function dumpEntries(array $entries, string $header, string $kind, int $level): void
+    {
+        echo "<details open class=node>";
+        echo "<summary class='type type-$kind'>" . $header . "</summary>";
+        echo "<div class=children>";
+ 
+        foreach ($entries as $key => $item) {
+            echo "<div class=prop><span class=name>";
+            echo is_int($key) ? $key : "'" . htmlspecialchars((string) $key) . "'";
+            echo "</span> => ";
+ 
+            if ($item === null) {
+                echo "<span class=typev>NULL</span>";
+            } elseif (is_array($item) || is_object($item)) {
+                self::vardump($item, $level + 1);
+            } else {
+                self::dumpScalar($item);
+            }
+ 
+            echo "</div>";
+        }
+ 
         echo "</div>";
+        echo "</details>";
+    }
+ 
+    private static function dumpScalar(mixed $value): void
+    {
+        $type = gettype($value);
+        echo "<span class=typev>" . $type . "</span> ";
+        echo "<span class='value type-" . $type . "'>";
+ 
+        if ($type === "string") {
+            echo "'" . htmlspecialchars($value) . "'";
+        } elseif ($type === "boolean") {
+            echo $value ? "true" : "false";
+        } else {
+            echo $value;
+        }
+ 
+        echo "</span>";
+ 
+        if ($type === "string") {
+            echo " <span class=string-len>(length=" . strlen($value) . ")</span>";
+        }
     }
 
     public static function random(int $length): string {
