@@ -3,9 +3,7 @@ namespace Controllers;
 
 use UserService;
 
-/**
- * @allowAnonymous
- */
+#[\AllowAnonymous]
 class Login extends \Controller {
     private UserService $userService;
     
@@ -13,15 +11,12 @@ class Login extends \Controller {
         $this->userService = $userService;        
     }
 
-    /** 
-     * @method GET 
-     * @POST ::login
-     */
+    #[\Route('login', \Method::GET, name: 'auth.login')]
     public function index(?string $back = null) {
         return $this->View("index", ["back" => $back]);
     }
 
-    /** @method POST */
+    #[\Route('login', \Method::POST, name: 'auth.login')]
     public function login(string $login, string $password, ?string $back = null) {
         $loginState = $this->userService->login($login, $password);
         if($loginState == \UserServiceLogin::Ok) {
@@ -31,15 +26,12 @@ class Login extends \Controller {
         return $this->view("index", ["state" => $loginState, "back" => $back]);
     }
 
-    /** 
-     * @method GET 
-     * @POST ::registerPost
-     */
+    #[\Route('register', \Method::GET, name: 'auth.register')]
     public function register(){
         return $this->view("register");
     }
 
-    /** @method POST */
+    #[\Route('register', \Method::POST, name: 'auth.register')]
     public function registerPost(string $login, string $email, string $password, string $confirmPassword, string $gender = "") {
         if(empty($login) || empty($email) || empty($password) || empty($confirmPassword) || empty($gender)) {
             return $this->view("register", ["error" => "All fields are required"]);
@@ -63,15 +55,12 @@ class Login extends \Controller {
         return $this->view("register", ["success" => true]);
     }
 
-    /** 
-     * @route("password-reset")
-     * @method GET 
-     * @POST ::resetPasswordPost
-     */
+    #[\Route('password-reset', \Method::GET, name: 'auth.password.reset')]
     public function resetPassword() {
         return $this->view("reset_password");
     }
-
+    
+    #[\Route('password-reset', \Method::POST, name: 'auth.password.reset')]
     public function resetPasswordPost(string $email) {
         if(empty($email)) {
             return $this->view("reset_password", ["error" => "Email is required"]);
@@ -87,11 +76,7 @@ class Login extends \Controller {
         return $this->view("reset_password", ["success" => true]);
     }
 
-    /** 
-     * @route("password-reset-ticket/<token>")
-     * @method GET 
-     * @POST ::resetPasswordConfirmSave
-     */
+    #[\Route('password-reset-ticket/<token>', \Method::GET, name: 'auth.password.reset.ticket')]
     public function resetPasswordConfirm(string $token) {
         $ticket = $this->userService->checkResetPasswordTicket($token, $user, $ticket);
         if($ticket === \UserServiceCheck::WrongToken) {
@@ -101,6 +86,7 @@ class Login extends \Controller {
         return $this->view("reset_password_ticket", ["token" => $token, "user" => $user]);
     }
 
+    #[\Route('password-reset-ticket/<token>', \Method::POST, name: 'auth.password.reset.ticket')]
     public function resetPasswordConfirmSave(string $token, string $password, string $confirm_password) {
         if(empty($password) || empty($confirm_password)) {
             return $this->view("reset_password_ticket", ["error" => "Both fields are required", "token" => $token]);

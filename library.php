@@ -1621,19 +1621,39 @@ class Container {
     }
 }
 
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+final class AllowAnonymous {}
+
+#[Attribute(Attribute::TARGET_METHOD)]
+final class Route {
+    public function __construct(
+        public string $path,
+        public Method $method = Method::UNKNOWN,
+        public int $priority = 0,
+        public ?string $name = null
+    ) {}
+}
+
+#[Attribute(Attribute::TARGET_METHOD)]
+final class RequireMethod {
+    public function __construct(
+        public Method $method,
+    ) {}
+}
+
 class ModelNotFoundException extends \Exception {
     public function __construct(string $class, mixed $id) {
         parent::__construct("Model '{$class}' with ID '{$id}' not found");
     }
 }
 
-enum Method {
-    case UNKNOWN;
-    case GET;
-    case POST;
-    case PUT;
-    case DELETE;    
-    case HEAD;
+enum Method: string {
+    case UNKNOWN = 'UNKNOWN';
+    case GET = 'GET';
+    case POST = 'POST';
+    case PUT = 'PUT';
+    case DELETE = 'DELETE';
+    case HEAD = 'HEAD';
 }
 
 class Router {
@@ -1644,6 +1664,7 @@ class Router {
     private string $cacheFile = 'routes.cache.json';
     private array $controllers = [];
     private array $procesed = [];
+    private array $routesByName = [];
 
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
@@ -1689,7 +1710,8 @@ class Router {
     private function loadFromCache() {
         $cache = json_decode(file_get_contents($this->cacheFile), true);
         foreach($cache['routes'] as $route) {
-            $this->add($route['route'], [$route['controller'], $route['method']]);
+            $method = isset($route['httpMethod']) ? Method::from($route['httpMethod']) : null;
+            $this->add($route['route'], [$route['controller'], $route['method']], false, $method, $route['name'] ?? null);
         }
     }
 
@@ -1708,6 +1730,19 @@ class Router {
         file_put_contents($this->cacheFile, json_encode($cache, JSON_PRETTY_PRINT));
     }
 
+    private function buildNameIndex(): void {
+        $this->routesByName = [];
+
+        foreach ($this->routes as $route) {
+            $name = $route['name'] ?? null;
+            if ($name === null || !is_array($route['handler'])) {
+                continue;
+            }
+
+            $this->routesByName[$name][] = $route;
+        }
+    }
+
     private function loadRoutes() {
         DebugTimer::start('router.controller.loading');
 
@@ -1716,10 +1751,12 @@ class Router {
         } else {
             $routes = $this->generateRoutes();
             foreach($routes as $route) {
-                $this->add($route['route'], [$route['controller'], $route['method']]);
+                $this->add($route['route'], [$route['controller'], $route['method']], false, $route['httpMethod'] ?? null, $route['name'] ?? null);
             }
             $this->saveCache($routes);
         }
+
+        $this->buildNameIndex();
 
         DebugTimer::stop('router.controller.loading');
     }
@@ -1738,22 +1775,19 @@ class Router {
                     $methods = $reflection->getMethods(ReflectionMethod::IS_PUBLIC);
 
                     foreach ($methods as $method) {
-                        $docComment = $method->getDocComment();
+                        $attributes = $method->getAttributes(Route::class);
 
-                        if ($docComment !== false) {                                
-                            DocParser::parse($docComment, function (string $annotation, array $arguments) use ($controllerClass, $method, &$routes) {
-                                if ($annotation === 'route' && !empty($arguments)) {
-                                    $route = $arguments[0];
-                                    $priority = isset($arguments[1]) ? (int)$arguments[1] : 0;
-                                    
-                                    $routes[] = [
-                                        'route' => $route,
-                                        'controller' => $controllerClass,
-                                        'method' => $method->getName(),
-                                        'priority' => $priority
-                                    ];
-                                }
-                            });
+                        foreach ($attributes as $attribute) {
+                            $route = $attribute->newInstance();
+
+                            $routes[] = [
+                                'route' => $route->path,
+                                'name' => $route->name,
+                                'controller' => $controllerClass,
+                                'method' => $method->getName(),
+                                'priority' => $route->priority,
+                                'httpMethod' => $route->method
+                            ];
                         }
                     }
                 }
@@ -1835,7 +1869,7 @@ class Router {
         return $pattern;
     }
 
-    public function add(string $path, string|callable|array $handler, bool $redirect = false): void {
+    public function add(string $path, string|callable|array $handler, bool $redirect = false, ?Method $method = null, ?string $name = null): void {
         $path = $this->combineOptionalSegments($path);
         $pattern = $this->buildRegexPattern($path);
         
@@ -1846,8 +1880,39 @@ class Router {
             'redirect' => $redirect,
             'status' => null,
             'variables' => null,
-            'module' => null
+            'module' => null,
+            'method' => $method,
+            'name' => $name,
         ];
+    }
+
+    public function addControllerActionFallback(string $pattern = '<controller>/<action=index>'): void {
+        $this->add($pattern, function (array $variables) {
+            $controllerName = $variables['controller'] ?? null;
+            $action = $variables['action'] ?? 'index';
+
+            if ($controllerName === null) {
+                http_response_code(404);
+                echo "Not Found";
+                exit();
+            }
+
+            $this->processVariables($variables);
+
+            try {                
+                $this->callController([$controllerName, $action], $variables, null);
+            } catch (ControllerMethodNotAllowedException $e) {
+                $this->procesed[] = "Controller method not allowed: " . $e->getMessage();
+                http_response_code(405);
+                echo "Method Not Allowed";
+                exit();
+            } catch (ModelNotFoundException $e) {
+                $this->procesed[] = "Model not found: " . $e->getMessage();
+                http_response_code(404);
+                echo "Not Found";
+                exit();
+            }
+        });
     }
 
     public function redirect(string $path): void {
@@ -1879,7 +1944,7 @@ class Router {
                     $this->processVariables($matchedRoute['variables']);
 
                     try {
-                        $this->callController($matchedRoute['handler'], $matchedRoute['variables']);
+                        $this->callController($matchedRoute['handler'], $matchedRoute['variables'], $matchedRoute['method']);
                     } catch (ControllerMethodNotAllowedException $e) {
                         $this->procesed[] = "Controller method not allowed: " . $e->getMessage();
                         http_response_code(405);
@@ -1887,7 +1952,8 @@ class Router {
                         exit();
                     } catch (ModelNotFoundException $e) {
                         $this->procesed[] = "Model not found: " . $e->getMessage();
-                        http_response_code(404);
+                        http_response_code(404);                        
+
                         echo "Not Found";
                         exit();
                     }
@@ -1905,6 +1971,59 @@ class Router {
         DebugTimer::stop("router.start");
     }
 
+    public function generateUrl(string $name, array $params = []): string {
+        if (!isset($this->routesByName[$name])) {
+            throw new Exception("Route with name '$name' not found");
+        }
+
+        foreach ($this->routesByName[$name] as $route) {
+            if ($this->patternAcceptsParams($route['pattern'], $params)) {
+                return $this->buildUrlFromPattern($route['pattern'], $params);
+            }
+        }
+
+        throw new Exception("No route variant for name '$name' matches given params: " . implode(', ', array_keys($params)));
+    }
+
+    private function patternAcceptsParams(string $pattern, array $params): bool {
+        // required = segments with <name> NOT wrapped in [...]
+        preg_match_all('/(?<!\[[^\]]*)<([^>=]+)(?:=[^>]*)?>/', $pattern, $matches);
+        $required = $matches[1] ?? [];
+
+        foreach ($required as $name) {
+            if (!array_key_exists($name, $params)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function buildUrlFromPattern(string $pattern, array $params): string {
+        $path = preg_replace_callback('/<([^>=]+)(?:=([^>]*))?>/', function ($m) use ($params) {
+            $name = $m[1];
+            $default = $m[2] ?? null;
+
+            if (array_key_exists($name, $params)) {
+                return (string)$params[$name];
+            }
+
+            if ($default !== null) {
+                return $default;
+            }
+
+            return '';
+        }, $pattern);
+
+        $path = preg_replace_callback('/\[[^\[\]]*\]/', function ($m) {
+            return str_contains($m[0], '<') ? '' : trim($m[0], '[]');
+        }, $path);
+
+        $path = preg_replace_callback('/\[([^\[\]]*)\]/', fn($m) => $m[1], $path);
+
+        return trim($path, '/');
+    }
+
     private function processVariables($variables) {
         if($variables == null || !is_array($variables)) return;
         foreach($variables as $name => $value) {
@@ -1912,80 +2031,98 @@ class Router {
         }
     }
 
-    private function callController(array $definition, ?array $variables = null){
-        if(!is_array($definition)) throw new Exception("Definition must be array [class, method]");        
-        $class = $originalClass = (string)$definition[0];
-        $methodNameOrCallback = count($definition) > 1? $definition[1]: "index";        
-        
-        if(substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\". $class;          
-        if(!class_exists($class) && class_exists($class."Controller")) $class .= "Controller";
+    private function findSiblingByName(?string $name, Method $wantedMethod): ?ReflectionMethod {
+        if ($name === null || !isset($this->routesByName[$name])) {
+            return null;
+        }
 
-        if(!class_exists($class)) 
+        foreach ($this->routesByName[$name] as $route) {
+            if ($route['method'] === $wantedMethod) {
+                [$class, $methodName] = $route['handler'];
+                return new ReflectionMethod($class, $methodName);
+            }
+        }
+
+        return null;
+    }
+
+    private function callController(array $definition, ?array $variables = null, ?Method $httpMethod = Method::UNKNOWN): void {
+        if (!is_array($definition)) throw new Exception("Definition must be array [class, method]");
+        $class = $originalClass = (string)$definition[0];
+        $methodNameOrCallback = count($definition) > 1 ? $definition[1] : "index";
+
+        if (substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\" . $class;
+        if (!class_exists($class) && class_exists($class . "Controller")) $class .= "Controller";
+
+        if (!class_exists($class))
             throw new Exception("Class $originalClass not exists");
-        if(!is_subclass_of($class, "Controller")) 
+        if (!is_subclass_of($class, "Controller"))
             throw new Exception("Class $originalClass not implement class \"Controller\"");
 
         $instance = Container::getInstance()->create($class);
 
-        // Check if the handler is a callable object (e.g., a closure or an invokable class) and not a built-in function or method for example sort function
         $isBuiltin = false;
-        if(is_object($methodNameOrCallback) && method_exists($methodNameOrCallback, '__invoke')) {
+        if (is_object($methodNameOrCallback) && method_exists($methodNameOrCallback, '__invoke')) {
             $ref = new ReflectionMethod($methodNameOrCallback, '__invoke');
             $isBuiltin = $ref->isInternal();
         }
 
-        if(!$isBuiltin && is_callable($methodNameOrCallback)){
-            $method = $methodNameOrCallback($variables);            
-        }else {
+        if (!$isBuiltin && is_callable($methodNameOrCallback)) {
+            $method = $methodNameOrCallback($variables);
+        } else {
             $method = $methodNameOrCallback;
         }
 
-        if($method == null || $method == "") $method = "index";
-        
-        if(!method_exists($instance, $method)) 
+        if ($method == null || $method == "") $method = "index";
+
+        if (!method_exists($instance, $method))
             throw new Exception("Method '$method' not found in class '$class'");
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
         $methodName = $this->request->method()->name;
-        $methodsToRedirect = [];        
+        $methodsToRedirect = [];
 
         $methodsToRedirect[] = "$reflectionMethod->class::$reflectionMethod->name";
-        while($reflectionMethod != null) {
+        while ($reflectionMethod != null) {
+            // CHANGED: requiredMethod now comes from attributes only, no DocParser.
+            // Priority: #[Route(method: ...)] first, then #[RequireMethod(...)] as fallback
+            // for actions reachable directly via controller/action without a Route.
             $requiredMethod = Method::UNKNOWN;
-            $replaceMethodOn = [];
+            $routeName = null;
 
-            $docComment = $reflectionMethod->getDocComment();
-            DocParser::parse($docComment, function($name, $args) use (&$requiredMethod, &$replaceMethodOn, $instance) {            
-                if($name == "method") {                
-                    $requiredMethod = DocParser::resolveEnum(Method::class, $args[0]);
-                }
-                else if($name == "get") {
-                    $replaceMethodOn[Method::GET->name] = DocParser::resolveFunction($args[0], $instance);
-                }
-                else if($name == "post") {
-                    $replaceMethodOn[Method::POST->name] = DocParser::resolveFunction($args[0], $instance);
-                }
-            });
-
-            if($requiredMethod != Method::UNKNOWN && !$this->request->is($requiredMethod)) {
-                if(isset($replaceMethodOn[$methodName])) {                                    
-                    $reflectionMethod = $replaceMethodOn[$methodName];
-                     
-                    $fullName = "$reflectionMethod->class::$reflectionMethod->name";
-                    if(in_array($fullName, $methodsToRedirect)) {
-                        throw new Exception("Circual redirection detected, ".implode(" -> ", $methodsToRedirect)." -> $fullName");
-                    }                    
-                    $methodsToRedirect[] = $fullName;
-                    continue;
-                } else {
-                    throw new ControllerMethodNotAllowedException($requiredMethod);
-                }            
+            $routeAttributes = $reflectionMethod->getAttributes(Route::class);
+            if ($routeAttributes !== []) {
+                $routeInstance = $routeAttributes[0]->newInstance();
+                $requiredMethod = $routeInstance->method;
+                $routeName = $routeInstance->name;
             }
-            
+
+            if ($requiredMethod === Method::UNKNOWN) {
+                $requireMethodAttributes = $reflectionMethod->getAttributes(RequireMethod::class);
+                if ($requireMethodAttributes !== []) {
+                    $requiredMethod = $requireMethodAttributes[0]->newInstance()->method;
+                }
+            }
+
+            if ($requiredMethod != Method::UNKNOWN && !$this->request->is($requiredMethod)) {
+                $sibling = $this->findSiblingByName($routeName, $this->request->method());
+
+                if ($sibling !== null) {
+                    $fullName = "{$sibling->class}::{$sibling->name}";
+                    if (in_array($fullName, $methodsToRedirect)) {
+                        throw new Exception("Circular redirection detected, " . implode(" -> ", $methodsToRedirect) . " -> $fullName");
+                    }
+                    $methodsToRedirect[] = $fullName;
+                    $reflectionMethod = $sibling;
+                    continue;
+                }
+
+                throw new ControllerMethodNotAllowedException($requiredMethod);
+            }
+
             $methodParams = $reflectionMethod->getParameters();
             $resolvedParams = [];
 
-            // Pre-scan: find all model parameters to enable fallback binding by "id"
             $modelParams = [];
             foreach ($methodParams as $param) {
                 $type = $param->getType();
@@ -2000,18 +2137,16 @@ class Router {
             foreach ($methodParams as $param) {
                 $name = $param->getName();
                 $type = $param->getType();
-                
-                // --- Route Model Binding ---
+
                 if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
                     $typeName = $type->getName();
                     if (class_exists($typeName) && is_subclass_of($typeName, \Model::class)) {
                         $rawId = $_GET[$name] ?? $_POST[$name] ?? null;
-                        
-                        // If no explicit parameter provided, but there is exactly one model parameter, try to bind by "id"
+
                         if ($rawId === null && count($modelParams) === 1) {
                             $rawId = $_GET['id'] ?? $_POST['id'] ?? null;
                         }
-                        
+
                         if ($rawId !== null) {
                             $model = $typeName::findById($rawId);
                             if ($model === null) {
@@ -2043,17 +2178,17 @@ class Router {
                     throw new \Exception("Missing value for parameter '$name' of method $method in class $class");
                 }
             }
-             
-            if($this->needAuthentification($reflectionMethod)){                
+
+            if ($this->needAuthentication($reflectionMethod)) {
                 $this->redirectToLoginIfNeeded();
             }
 
             $resultModel = $reflectionMethod->invokeArgs($instance, $resolvedParams);
-            if($resultModel == null) {
+            if ($resultModel == null) {
                 throw new ControllerReturnedNullException($reflectionMethod->class, $reflectionMethod->name);
             }
-    
-            foreach($methodsToRedirect as $mtr){
+
+            foreach ($methodsToRedirect as $mtr) {
                 $this->procesed[] = "--> $mtr";
             }
             $this->controllerData = $resultModel;
@@ -2063,7 +2198,7 @@ class Router {
 
     public function redirectToLoginIfNeeded(){
         $authentication = $this->authenticationProvider->get();                
-        if(!$authentication->isAuthentificationRequired() || $authentication->isAuthenticated()) return;        
+        if(!$authentication->isAuthenticationRequired() || $authentication->isAuthenticated()) return;        
         
         if($this->request->isJsonRequest()) {
             ob_clean();
@@ -2075,7 +2210,7 @@ class Router {
             exit();
         }
 
-        $authUrl = $authentication->getAuthentificationUrl();
+        $authUrl = $authentication->getAuthenticationUrl();
         if(!empty($authUrl)) {
             $this->redirect($authUrl);
         } else {
@@ -2083,26 +2218,13 @@ class Router {
         }
     }
 
-    public function needAuthentification(ReflectionMethod $reflectionMethod): bool {        
-        $allowAnonymous = false;
+    public function needAuthentication(ReflectionMethod $reflectionMethod): bool {     
+        $classReflection = new ReflectionClass($reflectionMethod->class);
 
-        $docComment = (new ReflectionClass($reflectionMethod->class))->getDocComment();
-        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {        
-            if($name == "allowanonymous") {                
-                $allowAnonymous = true;
-            }
-        });
-        if($allowAnonymous) return false;
-
-        $docComment = $reflectionMethod->getDocComment();
-        DocParser::parse($docComment, function($name, $args) use (&$allowAnonymous) {
-            if($name == "allowanonymous") {                
-                $allowAnonymous = true;
-            }
-        });
-        if($allowAnonymous) return false;
-
-        return true;
+        if ($classReflection->getAttributes(AllowAnonymous::class) !== []) {
+            return false;
+        }
+        return $reflectionMethod->getAttributes(AllowAnonymous::class) === [];    
     }
 
     public function tryProcessController(): bool {
@@ -2138,6 +2260,17 @@ class Router {
         }
         else if($this->controllerData->getType() == ControllerActionType::Redirect) {
             $this->redirect($this->controllerData->getRedirectUrl());
+        }
+        else if ($this->controllerData->getType() == ControllerActionType::RedirectToRoute) {
+            $routeName = $this->controllerData->getRedirectRoute();
+
+            if ($routeName !== null) {
+                $url = $this->generateUrl($routeName, $this->controllerData->getRedirectRouteParams());
+            } else {
+                $url = $this->controllerData->getRedirectUrl();
+            }
+
+            $this->redirect($url);
         }
         else if($this->controllerData->getType() == ControllerActionType::None) {
             //continue return type
@@ -4912,10 +5045,19 @@ if(defined("USE_USERS")) {
             return UserServiceCheck::Ok;
         }
 
-        public function changePasswordByTicket(string $token, string $password): UserServiceCheck {            
+        public function changePasswordByTicket(string $token, string $password): UserServiceCheck {     
+            /** @var ?Models\User $user */
+            $user = null;
+            /** @var ?Models\Ticket $ticket */
+            $ticket = null;
+
             $state = $this->checkResetPasswordTicket($token, $user, $ticket);
             if($state != UserServiceCheck::Ok) {
                 return $state;
+            }
+
+             if ($user === null || $ticket === null) {
+                return UserServiceCheck::WrongToken;
             }
 
             $user->password = $this->hashPassword($password);
@@ -5386,6 +5528,7 @@ enum ControllerActionType {
     case View;
     case Json;
     case Redirect;
+    case RedirectToRoute;
 }
 
 class ControllerMethodNotAllowedException extends Exception {
@@ -5457,6 +5600,16 @@ class ControllerAction {
         return $this->params["redirect"];
     }
 
+    public function getRedirectRoute(): string {
+        if($this->type != ControllerActionType::RedirectToRoute) throw new Exception("getRedirectRoute can be called only for Redirect type");
+        return $this->params["route"];
+    }
+
+    public function getRedirectRouteParams(): array {
+        if($this->type != ControllerActionType::RedirectToRoute) throw new Exception("getRedirectRouteParams can be called only for Redirect type");
+        return $this->params["params"];
+    }
+
     public static function makeViewModel(string $class, string $view, array|null|object $model, bool $clearContent): ControllerAction {
         $viewModel = new ControllerAction();
         $viewModel->params = [
@@ -5488,6 +5641,16 @@ class ControllerAction {
             "redirect" => $url
         ];
         $viewModel->type = ControllerActionType::Redirect;
+        return $viewModel;
+    }
+
+    public static function makeRedirectToRouteModel(string $routeName, array $params = []): ControllerAction {
+        $viewModel = new ControllerAction();
+        $viewModel->params = [
+            "route" => $routeName,
+            "params" => $params
+        ];
+        $viewModel->type = ControllerActionType::RedirectToRoute;
         return $viewModel;
     }
 }
@@ -5532,6 +5695,10 @@ class Controller {
     protected function redirect(string $url): ControllerAction {
         return ControllerAction::makeRedirectModel($url);
     }
+
+    protected function redirectToRoute(string $routeName, array $params = []): ControllerAction {
+        return ControllerAction::makeRedirectToRouteModel($routeName, $params);
+    }
 }
 
 class AuthentificatorProvider {
@@ -5564,8 +5731,8 @@ class Authentication {
      */
     private array $methods = [];
     private ?AuthenticationMethod $defaultMethod = null;
-    private ?string $authentificationUrl = null;
-    private bool $needAuthentification = false;
+    private ?string $authenticationUrl = null;
+    private bool $needAuthentication = false;
 
     public static function registerConfig(ConfigProvider $configProvider): void {
         $configProvider->register([
@@ -5585,8 +5752,8 @@ class Authentication {
                             'cookies' => new CookieAuthentication('session', isset($cfg["AUTH_COOKIE_EXPIRATION"]) && $cfg["AUTH_COOKIE_EXPIRATION"] != ""? $cfg["AUTH_COOKIE_EXPIRATION"]: '+1 day')
                         ])
                         ->setDefaultAuthenticationMethod('cookies')
-                        ->setAuthentificationUrl(isset($cfg["AUTH_URL"]) && $cfg["AUTH_URL"] != ""?  $cfg["AUTH_URL"]: "login/")
-                        ->requireAuthentification(isset($cfg["AUTH_REQUIRED"]) && $cfg["AUTH_REQUIRED"] != ""? boolval($cfg["AUTH_REQUIRED"]): true);
+                        ->setAuthenticationUrl(isset($cfg["AUTH_URL"]) && $cfg["AUTH_URL"] != ""?  $cfg["AUTH_URL"]: "login/")
+                        ->requireAuthentication(isset($cfg["AUTH_REQUIRED"]) && $cfg["AUTH_REQUIRED"] != ""? boolval($cfg["AUTH_REQUIRED"]): true);
                     $authentificatorProvider->set($auth);
                 }else{
                     throw new Exception("Unknown authentificator type: {$type}");
@@ -5623,22 +5790,22 @@ class Authentication {
         return $this;
     }
 
-    public function setAuthentificationUrl(string $url): self {
-        $this->authentificationUrl = $url;
+    public function setAuthenticationUrl(string $url): self {
+        $this->authenticationUrl = $url;
         return $this;
     }
 
-    public function getAuthentificationUrl(): ?string {
-        return $this->authentificationUrl;
+    public function getAuthenticationUrl(): ?string {
+        return $this->authenticationUrl;
     }
 
-    public function requireAuthentification(bool $require): self {
-        $this->needAuthentification = $require;
+    public function requireAuthentication(bool $require): self {
+        $this->needAuthentication = $require;
         return $this;
     }
 
-    public function isAuthentificationRequired(): bool {
-        return $this->needAuthentification;
+    public function isAuthenticationRequired(): bool {
+        return $this->needAuthentication;
     }
 
     private function getMethod(?string $method = null): AuthenticationMethod {

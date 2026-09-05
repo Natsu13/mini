@@ -44,10 +44,12 @@ $router->add("apitest", function () use ($response, $request) {
     }
     exit();
 });
-$router->add("apitest2", [Controllers\Article::class, "apiTest"]);
+$router->add("apitest2", [Controllers\Test::class, "apiTest"]);
 
 $router->add("article/<id>", [Controllers\Article::class]);
 $router->add("article/<action>/<id>", "view=article&action=<action>&id=<id>");
+
+$router->addControllerActionFallback();
 
 $router->start();
 
