@@ -42,7 +42,7 @@ class User extends \Model {
         return $this->getRelation("articles");
     }
 
-    public static function findByEmail($email): ?User {
+    public static function findByEmail(string $email): ?User {
         $obj = (new static);
         return $obj->where(["email" => $email])->fetch();
     }

@@ -5,8 +5,6 @@ use Database;
 
 /** 
  * @table("articles") 
- * 
- * @method \Model\User|null author()
  */
 class Article extends \Model {
     /** @primaryKey */
