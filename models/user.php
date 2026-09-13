@@ -3,41 +3,35 @@ namespace Models;
 
 use Database;
 
-/** 
- * @table("users") 
- */
+#[\Table('users')]
 class User extends \Model {
-    /** @primaryKey */
+    #[\PrimaryKey]
     public ?int $id;
 
-    /** @column("login")
-     *  @length(100)
-    */
+    #[\Column('login', length: 100)]
     public string $login;
 
-    /** @length(100) */
+    #[\Column('password', length: 100)]
     public string $password;
 
-    /** @length(100) */
+    #[\Column('email', length: 100)]
     public string $email;
 
-    /** @length(10) */
+    #[\Column('gender', length: 10)]
     public string $gender;
 
-    /** @column("permission_id") */
+    #[\Column('permission_id')]
     public int $permissionId;
 
-    /**
-     * @hasOne("Permission")
-     */    
+    #[\Relation(\RelationType::HasOne, Permission::class)]
     public function getPermission(): ?Permission {
         return $this->getRelation("permission");
     }
 
     /**
-     * @hasMany("Article", "author_id")
      * @return \QueryBuilder<\Models\Article>
      */
+    #[\Relation(\RelationType::HasMany, Article::class, 'author_id')]
     public function getArticles(): \QueryBuilder {
         return $this->getRelation("articles");
     }
@@ -51,7 +45,7 @@ class User extends \Model {
         $db = \Container::getInstance()->get(Database::class)->getConnection();
         $stmt = $db->prepare("SELECT * FROM users WHERE login = :login OR email = :email");
         $stmt->bindParam(':login', $login, \PDO::PARAM_STR);
-        $stmt->bindParam(':email', $email, \PDO::PARAM_STR);        
+        $stmt->bindParam(':email', $email, \PDO::PARAM_STR);
         $stmt->execute();
         $result = $stmt->fetch(\PDO::FETCH_ASSOC);
 

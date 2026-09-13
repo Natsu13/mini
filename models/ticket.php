@@ -3,14 +3,12 @@ namespace Models;
 
 use Database;
 
-/** 
- * @table("tickets") 
- */
+#[\Table('tickets')]
 class Ticket extends \Model {
-    /** @primaryKey */
+    #[\PrimaryKey]
     public ?int $id;
 
-    /** @length(20) */
+    #[\Column(length: 20)]
     public string $token;
 
     public int $created;

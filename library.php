@@ -1621,9 +1621,17 @@ class Container {
     }
 }
 
+/**
+ * Indicates that the route can be accessed without authentication.
+ */
 #[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
 final class AllowAnonymous {}
 
+/**
+ * Define the route path and HTTP method for a controller action. You can also specify a priority and an optional name for the route.
+ * The route name is useful for generating URLs or referencing the route in other parts of the application.
+ * If you define two same route path with different methods, the router will handle them correctly based on the HTTP method of the request.
+ */
 #[Attribute(Attribute::TARGET_METHOD)]
 final class Route {
     public function __construct(
@@ -1634,6 +1642,13 @@ final class Route {
     ) {}
 }
 
+/**
+ * Indicates that the route requires a specific HTTP method (GET, POST, etc.) to be accessed.
+ * You should use it when you dont need to define the route only required method for the route.
+ * If the request method does not match, a 405 Method Not Allowed response will be returned
+ * 
+ * @param Method $method The required HTTP method for the route.
+ */
 #[Attribute(Attribute::TARGET_METHOD)]
 final class RequireMethod {
     public function __construct(
@@ -3674,6 +3689,67 @@ class ModelDefinition {
     public bool $primaryKeyAutoIncrement = true;
 }
 
+#[Attribute(Attribute::TARGET_CLASS)]
+final class Table {
+    public function __construct(public string $name) {}
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+final class PrimaryKey {
+    public function __construct(public bool $autoIncrement = true) {}
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+final class Column
+{
+    public function __construct(
+        public ?string $name = null,
+        public ?string $defaultValue = null,
+        public ?int $length = null,
+    ) {}
+}
+
+enum RelationType: string
+{
+    /**
+     * One-to-many relation where the foreign key lives on the TARGET table.
+     * Example: User hasMany Orders -> `orders.user_id` points back to this record.
+     */
+    case HasMany = 'hasMany';
+
+    /**
+     * Inverse relation where the foreign key lives on THIS table.
+     * Example: Order belongsTo User -> `orders.user_id` points to the related User.
+     */
+    case BelongsTo = 'belongsTo';
+
+    /**
+     * One-to-one relation where the foreign key lives on THIS table.
+     * Example: User hasOne Permission -> `users.permission_id` points to the related Permission.
+     */
+    case HasOne = 'hasOne';
+
+    /**
+     * One-to-one relation where the foreign key lives on the TARGET table (inverse of HasOne).
+     * Example: Manifest hasOneInverse DailyStat -> `daily_stats.manifest_id` points back to this record.
+     */
+    case HasOneInverse = 'hasOneInverse';
+}
+
+/**
+ * Defines the type of relationship between models and, implicitly,
+ * on which side of the relation the foreign key is stored.
+ */
+#[Attribute(Attribute::TARGET_METHOD)]
+final class Relation
+{
+    public function __construct(
+        public RelationType $type,
+        public string $class,
+        public ?string $foreignKey = null,
+    ) {}
+}
+
 abstract class Model {
     private string $table;
     private string $primaryKey;
@@ -3763,23 +3839,25 @@ abstract class Model {
 
         foreach ($properties as $property) {
             $propertyName = $property->getName();
-            $docComment = $property->getDocComment();
+            $type = $property->getType();
             $defaultValue = null;
 
-            $type = $property->getType();
+            $columnAttributes = $property->getAttributes(Column::class);
+            $column = !empty($columnAttributes) ? $columnAttributes[0]->newInstance() : null;
 
-            if (preg_match('/@default\(([^)]+)\)/', $docComment, $matches)) {
-                if($type->getName() != 'string')
-                    throw new Exception("Default can be set only for string date types"); 
+            if ($column !== null && $column->defaultValue !== null) {
+                if (!$type instanceof ReflectionNamedType || $type->getName() !== 'string') {
+                    throw new Exception("Default can be set only for string date types");
+                }
 
-                $defaultValue = trim($matches[1], '"\'');
+                $defaultValue = $column->defaultValue;
             } else {
                 if ($type instanceof ReflectionNamedType) {
                     $typeName = $type->getName();
 
                     if ($type->allowsNull()) {
                         $defaultValue = null;
-                    } else if(!$type->isBuiltin() && class_exists($typeName)) {
+                    } else if (!$type->isBuiltin() && class_exists($typeName)) {
                         $refClass = new ReflectionClass($typeName);
                         if ($refClass->isEnum()) {
                             $enumCases = $typeName::cases();
@@ -3817,42 +3895,42 @@ abstract class Model {
     private function getColumnMappings() {
         $reflector = new ReflectionClass($this);
 
-        $docComment = $reflector->getDocComment();
-        if (preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
-            $this->table = $matches[1];
+        $tableAttributes = $reflector->getAttributes(Table::class);
+        if (!empty($tableAttributes)) {
+            $this->table = $tableAttributes[0]->newInstance()->name;
         }
 
-        if($this->table == null) {
-            throw new Exception("Table name is not set for model ".get_class($this));
+        if ($this->table == null) {
+            throw new Exception("Table name is not set for model " . get_class($this));
         }
 
         $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
         $this->mappings = [];
         $this->mappingsBack = [];
-        $this->columnsDefinition = []; 
-        
+        $this->columnsDefinition = [];
+
         foreach ($properties as $property) {
-            $docComment = $property->getDocComment();
-            $column = $property->getName();
+            $propName = $property->getName();
+            $column = $propName;
             $length = null;
 
-            if (strpos($docComment, '@primaryKey') !== false) {
+            $columnAttributes = $property->getAttributes(Column::class);
+            if (!empty($columnAttributes)) {
+                $columnAttr = $columnAttributes[0]->newInstance();
+                $column = $columnAttr->name ?? $propName;
+                $length = $columnAttr->length;
+            }
+
+            $primaryKeyAttributes = $property->getAttributes(PrimaryKey::class);
+            if (!empty($primaryKeyAttributes)) {
                 $this->primaryKey = $column;
 
-                if (strpos($docComment, '@autoIncrementDisabled') !== false) {
+                $primaryKey = $primaryKeyAttributes[0]->newInstance();
+                if (!$primaryKey->autoIncrement) {
                     $this->primaryKeyAutoIncrement = false;
                 }
             }
 
-            if (preg_match('/@column\("([^"]+)"\)/', $docComment, $matches)) {
-                $column = $matches[1];
-            }
-
-            if (preg_match('/@length\((\d+)\)/', $docComment, $lengthMatch)) {
-                $length = (int)$lengthMatch[1];
-            }
-
-            $propName = $property->getName();
             $this->mappings[$propName] = $column;
             $this->mappingsBack[$column] = $propName;
             $this->columnsDefinition[$column] = [
@@ -4010,44 +4088,35 @@ abstract class Model {
         $relationships = [];
 
         foreach ($methods as $method) {
-            $docComment = $method->getDocComment();
-            if (!$docComment) continue;
+            $attributes = $method->getAttributes(Relation::class);
+            if (empty($attributes)) continue;
 
+            $relation = $attributes[0]->newInstance();
             $methodName = $method->getName();
             $relationKey = lcfirst(preg_replace('/^get/', '', $methodName));
 
-            // hasMany - foreign key je v cílové tabulce
-            if (preg_match('/@hasMany\("([^"]+)"\s*,\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$relationKey] = [
-                    'type' => 'hasMany',
-                    'class' => $matches[1],
-                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
-                ];
-            }
-            // belongsTo - foreign key je v aktuální tabulce
-            else if (preg_match('/@belongsTo\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$relationKey] = [
-                    'type' => 'belongsTo',
-                    'class' => $matches[1],
-                    'foreignKey' => !empty($matches[2]) ? $matches[2] : 'id' //strtolower($matches[1]) . '_id'
-                ];
-            }
-            // hasOne - foreign key je v aktuální tabulce (jako User → Permission)
-            else if (preg_match('/@hasOne\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$relationKey] = [
-                    'type' => 'hasOne',
-                    'class' => $matches[1],
-                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower($matches[1]) . '_id'
-                ];
-            }
-            // hasOneInverse - foreign key je v cílové tabulce (jako Manifest → DailyStat)
-            else if (preg_match('/@hasOneInverse\("([^"]+)"\s*,?\s*"?([^"]*)"?\)/', $docComment, $matches)) {
-                $relationships[$relationKey] = [
-                    'type' => 'hasOneInverse',
-                    'class' => $matches[1],
-                    'foreignKey' => !empty($matches[2]) ? $matches[2] : strtolower(get_class($this)) . '_id'
-                ];
-            }
+            $thisShortName = $reflector->getShortName();
+            $targetShortName = (new ReflectionClass($relation->class))->getShortName();
+
+            $foreignKey = $relation->foreignKey ?? match ($relation->type) {
+                // foreign key is on the TARGET table, pointing back to this model
+                RelationType::HasMany, RelationType::HasOneInverse
+                    => strtolower($thisShortName) . '_id',
+
+                // foreign key is on THIS table, pointing to the related model's id
+                RelationType::BelongsTo
+                    => 'id',
+
+                // foreign key is on THIS table, pointing to the related model
+                RelationType::HasOne
+                    => strtolower($targetShortName) . '_id',
+            };
+
+            $relationships[$relationKey] = [
+                'type' => $relation->type->value,
+                'class' => $relation->class,
+                'foreignKey' => $foreignKey,
+            ];
         }
 
         return $relationships;
@@ -4056,7 +4125,7 @@ abstract class Model {
     protected function loadRelationship(string $method) {
         if (isset($this->relationCache[$method])) {
             return $this->relationCache[$method];
-        }        
+        }
 
         $relationships = $this->getRelationships();
         if (!isset($relationships[$method])) {
@@ -4065,35 +4134,32 @@ abstract class Model {
 
         $relation = $relationships[$method];
         $result = null;
-        
-        if ($relation['type'] === 'hasMany') {                        
-            $foreignKey = isset($this->mappings[$relation['foreignKey']])? $this->mappings[$relation['foreignKey']]: $relation['foreignKey'];
-            $className = "Models\\". $relation['class'];
-            
+
+        if ($relation['type'] === 'hasMany') {
+            $foreignKey = isset($this->mappings[$relation['foreignKey']]) ? $this->mappings[$relation['foreignKey']] : $relation['foreignKey'];
+            $className = $relation['class'];
+
             $result = (new $className)
                 ->where([$foreignKey => $this->{$this->primaryKey}]);
             return $result; // Return QueryBuilder for hasMany relation, because it can be used for further chaining
-        }
-        else if ($relation['type'] === 'hasOne') {
-            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
+        } else if ($relation['type'] === 'hasOne') {
+            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']]) ? $this->mappingsBack[$relation['foreignKey']] : $relation['foreignKey'];
             if (!isset($this->{$foreignKey})) {
-                throw new Exception("Foreign key $foreignKey is not set in " . get_class($this)." for relation $method");
+                throw new Exception("Foreign key $foreignKey is not set in " . get_class($this) . " for relation $method");
             }
             $foreignValue = $this->{$foreignKey};
-            $className = "Models\\". $relation['class'];
+            $className = $relation['class'];
 
             $result = $foreignValue ? ($className)::findById($foreignValue) : null;
-        }
-        else if ($relation['type'] === 'hasOneInverse') {
-            $foreignKey = isset($this->mappings[$relation['foreignKey']])? $this->mappings[$relation['foreignKey']]: $relation['foreignKey'];
-            $className = "Models\\". $relation['class'];
-            
+        } else if ($relation['type'] === 'hasOneInverse') {
+            $foreignKey = isset($this->mappings[$relation['foreignKey']]) ? $this->mappings[$relation['foreignKey']] : $relation['foreignKey'];
+            $className = $relation['class'];
+
             $result = ($className)::where([$foreignKey => $this->{$this->primaryKey}])->fetch();
-        }
-        else if ($relation['type'] === 'belongsTo') {
-            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']])? $this->mappingsBack[$relation['foreignKey']]: $relation['foreignKey'];
+        } else if ($relation['type'] === 'belongsTo') {
+            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']]) ? $this->mappingsBack[$relation['foreignKey']] : $relation['foreignKey'];
             $foreignValue = $this->{$foreignKey};
-            $className = "Models\\". $relation['class'];
+            $className = $relation['class'];
 
             $result = $foreignValue ? ($className)::where(["id" => $foreignValue])->fetch() : null;
         }
@@ -4134,50 +4200,46 @@ abstract class Model {
     public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin"): string {
         $reflection = new ReflectionClass($modelClass);
 
-        $docComment = $reflection->getDocComment();
-        if (!$docComment || !preg_match('/@table\("([^"]+)"\)/', $docComment, $matches)) {
-            throw new Exception("Table annotation (@table(...)) not found in class {$modelClass}");
+        $tableAttributes = $reflection->getAttributes(Table::class);
+        if (empty($tableAttributes)) {
+            throw new Exception("Table attribute (#[Table(...)]) not found in class {$modelClass}");
         }
-        $tableName = $matches[1];
+        $tableName = $tableAttributes[0]->newInstance()->name;
 
         $columns = [];
         $definedColumns = [];
 
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             $columnName = $property->getName();
+            $length = null;
+            $defaultValue = null;
 
-            $propDoc = $property->getDocComment();
-            if ($propDoc && preg_match('/@column\("([^"]+)"\)/', $propDoc, $colMatch)) {
-                $columnName = $colMatch[1];
+            $columnAttributes = $property->getAttributes(Column::class);
+            if (!empty($columnAttributes)) {
+                $columnAttr = $columnAttributes[0]->newInstance();
+                $columnName = $columnAttr->name ?? $columnName;
+                $length = $columnAttr->length;
+                $defaultValue = $columnAttr->defaultValue;
             }
 
             $type = $property->getType();
             $typeName = $type ? $type->getName() : 'string';
 
-            if (!$type->isBuiltin() && class_exists($typeName)) {
+            if ($type && !$type->isBuiltin() && class_exists($typeName)) {
                 $refClass = new ReflectionClass($typeName);
                 if ($refClass->isEnum()) {
                     $refEnum = new ReflectionEnum($typeName);
-                    if($refEnum->isBacked()) {
+                    if ($refEnum->isBacked()) {
                         $typeName = $refEnum->getBackingType()->getName();
-                    }else{
-                        throw new Exception("Enum {$typeName} is not backed enum, you need specify it's type");
+                    } else {
+                        throw new Exception("Enum {$typeName} is not a backed enum, you need to specify its type");
                     }
                 }
-            }            
-
-            $length = null;
-            if ($propDoc && preg_match('/@length\((\d+)\)/', $propDoc, $lengthMatch)) {
-                $length = (int)$lengthMatch[1];
             }
 
             $charset = "";
             if ($typeName === 'string') {
-                if ($length) {
-                    $sqlType = "varchar({$length})";
-                } else {
-                    $sqlType = "text";
-                }
+                $sqlType = $length ? "varchar({$length})" : "text";
                 $charset = " COLLATE {$defaultCollation}";
             } else {
                 switch ($typeName) {
@@ -4196,14 +4258,14 @@ abstract class Model {
                 }
             }
 
-            $primaryKey = ($propDoc && strpos($propDoc, '@primaryKey') !== false);
-            
+            $primaryKeyAttributes = $property->getAttributes(PrimaryKey::class);
+            $primaryKey = !empty($primaryKeyAttributes);
+            $autoIncrementDisabled = $primaryKey && !$primaryKeyAttributes[0]->newInstance()->autoIncrement;
+
             $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';
-            $autoIncrementDisabled = ($propDoc && strpos($propDoc, '@autoIncrementDisabled') !== false);
 
             $defaultClause = "";
-            if ($propDoc && preg_match('/@default\(([^)]+)\)/', $propDoc, $defaultMatch)) {
-                $defaultValue = trim($defaultMatch[1]);
+            if ($defaultValue !== null) {
                 if ($typeName === 'string') {
                     if ($defaultValue[0] !== "'" && $defaultValue[0] !== '"') {
                         $defaultValue = "'" . $defaultValue . "'";
@@ -4232,45 +4294,48 @@ abstract class Model {
         $keysAdded = [];
         $relationTables = [];
 
-        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE) as $method) {            
-            $methodDoc = $method->getDocComment();            
-            if (!$methodDoc) {
+        // Only HasOne and BelongsTo relations carry a real foreign key column on THIS table,
+        // so only those need a FK constraint here (HasMany / HasOneInverse point the other way).
+        $constraintRelationTypes = [RelationType::HasOne, RelationType::BelongsTo];
+
+        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE | ReflectionMethod::IS_PUBLIC) as $method) {
+            $relationAttributes = $method->getAttributes(Relation::class);
+            if (empty($relationAttributes)) {
                 continue;
             }
-                                            
-            if (preg_match('/@hasOne\("([^"]+)"(?:,\s*"([^"]+)")?(?:,\s*"([^"]+)")?\)/', $methodDoc, $match)) {       
-                $relatedClass = $match[1];
-                if(!isset($relationTables[$relatedClass])) {
-                    $docComment = new ReflectionClass("\\Models\\".$relatedClass);                    
-                    if (preg_match('/@table\("([^"]+)"\)/', $docComment->getDocComment(), $matches)) {                        
-                        $relatedClass = $relationTables[$relatedClass] = $matches[1];
-                    } else {
-                        $relationTables[$relatedClass] = $relatedClass;
-                    }
-                }else{
-                    $relatedClass = $relationTables[$relatedClass];
-                }                
 
-                if(isset($match[3]) && $match[3] != null) {
-                    $foreignKeyColumn = $match[3];
-                    $isForeign = true;
+            $relation = $relationAttributes[0]->newInstance();
+            if (!in_array($relation->type, $constraintRelationTypes, true)) {
+                continue;
+            }
+
+            $relatedClass = $relation->class;
+            if (!isset($relationTables[$relatedClass])) {
+                $relatedReflection = new ReflectionClass($relatedClass);
+                $relatedTableAttributes = $relatedReflection->getAttributes(Table::class);
+
+                if (!empty($relatedTableAttributes)) {
+                    $relationTables[$relatedClass] = $relatedTableAttributes[0]->newInstance()->name;
                 } else {
-                    $foreignKeyColumn = "id";
-                    $isForeign = false;
+                    $relationTables[$relatedClass] = $relatedReflection->getShortName();
                 }
-                $localTableKey = (isset($match[2]) && $match[2]) ? $match[2] : strtolower($method->getName()) . '_id';  
+            }
+            $relatedTable = $relationTables[$relatedClass];
 
-                if (isset($definedColumns[$localTableKey]) || $isForeign) {
-                    if (!isset($keysAdded[$localTableKey])) {
-                        $indexName = preg_replace('/_id$/', '', $localTableKey);
-                        if ($indexName === "") {
-                            $indexName = $localTableKey;
-                        }
-                        $keys[] = "KEY `{$indexName}` (`{$localTableKey}`)";
-                        $keysAdded[$localTableKey] = true;
+            $referencedColumn = $relation->foreignKey ?? 'id';
+            $methodName = preg_replace('/^get/', '', $method->getName());
+            $localTableKey = strtolower($methodName) . '_id';
+
+            if (isset($definedColumns[$localTableKey])) {
+                if (!isset($keysAdded[$localTableKey])) {
+                    $indexName = preg_replace('/_id$/', '', $localTableKey);
+                    if ($indexName === "") {
+                        $indexName = $localTableKey;
                     }
-                    $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$localTableKey}` FOREIGN KEY (`{$localTableKey}`) REFERENCES `" . strtolower($relatedClass) . "` (`".$foreignKeyColumn."`) ON DELETE NO ACTION ON UPDATE NO ACTION";
+                    $keys[] = "KEY `{$indexName}` (`{$localTableKey}`)";
+                    $keysAdded[$localTableKey] = true;
                 }
+                $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$localTableKey}` FOREIGN KEY (`{$localTableKey}`) REFERENCES `" . strtolower($relatedTable) . "` (`{$referencedColumn}`) ON DELETE NO ACTION ON UPDATE NO ACTION";
             }
         }
 

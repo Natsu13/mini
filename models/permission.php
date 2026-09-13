@@ -3,11 +3,9 @@ namespace Models;
 
 use Database;
 
-/** 
- * @table("permissions") 
- */
-class Permission extends \Model {
-    /** @primaryKey */
+#[\Table('permissions')]
+class Permission extends \Model{
+    #[\PrimaryKey]
     public ?int $id;
 
     public int $level;
@@ -17,7 +15,7 @@ class Permission extends \Model {
     public ?string $color;
 
     public function print(): string {
-        if($this->color) {
+        if ($this->color) {
             return "<span style='color:{$this->color}'>{$this->name}</span>";
         }
         return $this->name;

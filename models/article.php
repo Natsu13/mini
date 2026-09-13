@@ -2,27 +2,24 @@
 namespace Models;
 
 use Database;
+use Relation;
 
-/** 
- * @table("articles") 
- */
+#[\Table('articles')]
 class Article extends \Model {
-    /** @primaryKey */
+    #[\PrimaryKey]
     public ?int $id;
 
-    /** @column("author_id") */
+    #[\Column('author_id')]
     public int $authorId;
 
-    /** @length(200) */
+    #[\Column(length: 200)]
     public string $title;
 
     public string $content;
 
     public int $created;
 
-    /**
-     * @hasOne("User", "author_id")
-     */
+    #[\Relation(\RelationType::HasOne, User::class, 'author_id')]
     private function getAuthor(): ?User {
         return $this->getRelation("author");
     }
