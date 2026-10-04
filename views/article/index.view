@@ -1,3 +1,14 @@
-<h1>{$model["article"]->title}</h1>
-<i>{Date::ToString($model['article']->created)}</i>
-<p>{$model["article"]->content}</p>
+{include "header", ["title" => $model["article"]->title]}
+
+<p class="muted">
+    {if $model["article"]->isPublished()}<span class="badge badge-ok">published</span>{else}<span class="badge">draft preview</span>{/if}
+    by {if $model["author"]}{$model["author"]->login}{else}unknown{/if},
+    {Date::toString($model['article']->created)}
+</p>
+
+<article class="content">{!nl2br(TemplaterV2::e($model["article"]->content))}</article>
+
+<p class="actions">
+    <a href="{route 'article.edit', ['id' => $model['article']->id]}">Edit</a>
+    <a href="{route 'home'}">Back to my articles</a>
+</p>

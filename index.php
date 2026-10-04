@@ -27,13 +27,10 @@ $userService = $container->get(UserService::class);
 $request = $container->get(Request::class);
 $response = $container->get(Response::class);
 
-$router->add("", "view=index");
-$router->add("login", [Controllers\Login::class]);
-$router->add("register", [Controllers\Login::class, "register"]);
-$router->add("logout", function ($args) use ($userService, $router) {
-    $userService->logout();
-    $router->redirect("/");
-});
+$page->title = "Mini";
+$page->language = "en";
+$page->addStyle(Router::url() . "/assets/app.css");
+
 
 $router->add("apitest", function () use ($response, $request) {
     $response->enableCors();
@@ -44,102 +41,63 @@ $router->add("apitest", function () use ($response, $request) {
     }
     exit();
 });
-$router->add("apitest2", [Controllers\Test::class, "apiTest"]);
 
-$router->add("article/<id>", [Controllers\Article::class]);
-$router->add("article/<action>/<id>", "view=article&action=<action>&id=<id>");
-
+// Anything else resolves to controllers/<controller>.php::<action>() (defaults to index()).
 $router->addControllerActionFallback();
+
+// HTTP errors (404, 403, ...) as a styled page instead of plain text; JSON clients keep the JSON body.
+$router->setHttpErrorHandler(function (HttpException $e) use ($router, $request, $layout, $page) {
+    if ($request->isJsonRequest()) {
+        $router->setHttpErrorHandler(null);
+        $router->sendHttpError($e);
+    }
+
+    if (ob_get_level()) ob_clean();
+    http_response_code($e->getStatus());
+    $page->title = $e->getStatus() . " " . HttpException::reasonPhrase($e->getStatus());
+    echo "<html>";
+    $page->head();
+    echo "<body>";
+    $layout->render(ROOT . "/views/errors/error.view", ["status" => $e->getStatus(), "message" => $e->getMessage()]);
+    echo "</body></html>";
+    exit();
+});
 
 $router->start();
 
+// Redirects, JSON and standalone components never show the page shell, so send them right away
+// (this also keeps flash messages for the page that follows a redirect).
+if (!$router->rendersPage()) {
+    $router->tryProcessController();
+}
+
 echo "<html>";
     $page->head();
-    echo "<body>";        
+    echo "<body>";
 
         DebugTimer::start("page.draw");
 
+        // Site navigation + pending flash messages, shared by every page.
+        $layout->render(ROOT . "/views/partials/nav.view", ["user" => $userService->current(), "level" => $userService->currentLevel()]);
+
+        echo '<main class="container">';
         if (!$router->tryProcessController()) {
+            // No controller produced a response for this URL.
             $router->redirectToLoginIfNeeded();
-
-            $user = $userService->current();
-
-            DebugTimer::start("page.logic");
-
-            $builder = User::where(fn($w) => $w->and("login", "admin")->and("id = :id", [":id" => 1]))->limit(10);
-
-            $user1 = User::findById(1);
-
-            $http = new Http();
-
-            $articleLimitOnPage = 10;
-            $articles = $user->getArticles();
-            $paginator = new Paginator($articles->count(), $articleLimitOnPage, Router::url(true));
-            $articles = $articles->order("created DESC")->limit($articleLimitOnPage)->page($paginator->getCurrentPage());
-
-            $model = [
-                "user" => $user,
-                "permission" => $user->getPermission(),
-                "query" => $user1/*$builder->fetchAll()*/,
-                "api" => $http->postJson(Router::url() . "/apitest/")->getResponse(),
-                "api2" => (new Http())->postJson(Router::url() . "/apitest2/")->getResponse(),
-                "articlesPaginator" => $paginator,
-                "articles" => $articles,
-                "sql" => \Model::generateCreateTableQuery(User::class),
-                "action" => "none"                
-            ];
-
-            DebugTimer::stop("page.logic");
-
-            if ($_GET["view"] == "article" && $_GET["action"] == "new") {
-                if (isset($_POST["title"])) {
-                    $article = new Article();
-                    $article->title = $_POST["title"];
-                    $article->content = $_POST["content"];
-                    $article->authorId = $user->id;
-                    $article->save();
-                    $router->redirect("/article/edit/" . $article->id);
-                    exit();
-                }
-
-                $model["action"] = "article.edit";
-                $model["article"] = null;
-
-                $layout->render(ROOT . "/views/index.view", $model);
-            } else if ($_GET["view"] == "article" && $_GET["action"] == "edit") {
-                $article = Article::findById($_GET["id"]);
-                if ($article == null) {
-                    $response->status(404);
-                    $response->write("Article not found");
-                }
-
-                if (isset($_POST["title"])) {
-                    $article->title = $_POST["title"];
-                    $article->content = $_POST["content"];
-                    $article->save();
-                    $router->redirect("/article/edit/" . $article->id);
-                    exit();
-                }
-
-                $model["action"] = "article.edit";
-                $model["article"] = $article;
-
-                $layout->render(ROOT . "/views/index.view", $model);
-            } else if ($_GET["view"] == "article" && $_GET["action"] == "delete") {
-                $article = Article::findById($_GET["id"]);
-                $article->delete();
-                $router->redirect("/");
-            } else {
-                $layout->render(ROOT . "/views/index.view", $model);                
-            }
+            $response->status(404);
+            $layout->render(ROOT . "/views/errors/error.view", ["status" => 404, "message" => "Page not found"]);
         }
-        $page->footer();        
+        echo '</main>';
+
+        $page->footer();
 
         DebugTimer::stop("page.draw");
     echo "</body>";
 echo "</html>";
 
 DebugTimer::stop("core");
-DebugTimer::dump();
+if (DEBUG) {
+    DebugTimer::dump();
+}
 
 ob_end_flush();

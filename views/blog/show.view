@@ -1,0 +1,10 @@
+{include "header", ["title" => $model["article"]->title]}
+
+<p class="muted">
+    {if $model["author"]}{$model["author"]->login}{else}unknown{/if},
+    {Date::toString($model['article']->published ?? $model['article']->created, false)}
+</p>
+
+<article class="content">{!nl2br(TemplaterV2::e($model["article"]->content))}</article>
+
+<p><a href="{route 'blog.index'}">All articles</a></p>

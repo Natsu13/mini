@@ -1,0 +1,14 @@
+{include "header", ["title" => "Blog"]}
+
+{if count($model["articles"]) == 0}
+    <p class="empty">Nothing has been published yet.</p>
+{else}
+    {for $model["articles"] as $article}
+        <article class="teaser">
+            <h2><a href="{route 'blog.show', ['slug' => $article->slug]}">{$article->title}</a></h2>
+            <p class="muted">{if $article->getAuthor()}{$article->getAuthor()->login}{else}unknown{/if}, {Date::toString($article->published ?? $article->created, false)}</p>
+            <p>{$article->excerpt()}</p>
+        </article>
+    {/for}
+    {!$model["paginator"]->render()}
+{/if}

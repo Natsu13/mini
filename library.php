@@ -1,6 +1,6 @@
 <?php
-define("USE_USERS", 1);
-define("USE_EXCEPTION_HANDLER", 1);
+if(!defined("USE_USERS")) define("USE_USERS", true);
+if(!defined("USE_EXCEPTION_HANDLER")) define("USE_EXCEPTION_HANDLER", true);
 
 if(!defined("DEBUG")) {
     error_reporting(E_ERROR | E_PARSE);
@@ -89,10 +89,10 @@ class Autoload {
     }
 
     /**
-     * Přidá knihovnu s vlastním namespace a cestou
-     * @param string $name Název knihovny (např. "PhpSpreadsheet")
-     * @param string $namespace Root namespace knihovny (např. "PhpOffice")
-     * @param string $path Cesta ke knihovně (např. "libs/PhpSpreadsheet")
+     * Registers a library with its own root namespace and path
+     * @param string $name Library name (e.g. "PhpSpreadsheet")
+     * @param string $namespace Root namespace of the library (e.g. "PhpOffice")
+     * @param string $path Path to the library (e.g. "libs/PhpSpreadsheet")
      */
     public function addLib(string $name, string $namespace = '', string $path = ''): void {
         if (empty($namespace)) {
@@ -111,7 +111,7 @@ class Autoload {
     }
 
     /**
-     * Najde soubor pro danou třídu na základě registrovaných knihoven
+     * Finds the file for the given class based on the registered libraries
      */
     private function findFileForClass(string $class): ?string {
         foreach ($this->libraryPaths as $namespace => $basePath) {
@@ -214,7 +214,7 @@ class Autoload {
     }
 
     /**
-     * Odstraní knihovnu z registrovaných cest
+     * Removes a library from the registered paths
      */
     public function removeLib(string $namespace): void {
         unset($this->libraryPaths[$namespace]);
@@ -222,7 +222,7 @@ class Autoload {
     }
 
     /**
-     * Debug metoda - ukáže kde hledá soubor pro danou třídu
+     * Debug helper: shows where the autoloader looks for the given class
      */
     public function debugClass(string $class): array {
         $debug = [
@@ -608,9 +608,11 @@ class Config {
 
         DebugTimer::start("config.load");
 
-        $path = $path ?? ROOT . '/.env';
-        if (defined('DEBUG') && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
-            $path = ROOT . '/.env.dev';
+        if ($path === null) {
+            $path = ROOT . '/.env';
+            if (defined('DEBUG') && DEBUG === true && file_exists(ROOT . '/.env.dev')) {
+                $path = ROOT . '/.env.dev';
+            }
         }
 
         $encryptedPath = $path . '.encrypted';
@@ -716,6 +718,22 @@ class Config {
     public function get(string $key, mixed $default = null): mixed {
         return $this->data[$key] ?? $default;
     }
+    /**
+     * Reads a boolean config value. Accepts true/false, 1/0, yes/no, on/off (case-insensitive).
+     * Note: boolval("false") is true in PHP, which is why this helper exists.
+     */
+    public function getBool(string $key, bool $default = false): bool {
+        if (!isset($this->data[$key]) || trim($this->data[$key]) === '') {
+            return $default;
+        }
+        return self::parseBool($this->data[$key], $default);
+    }
+
+    public static function parseBool(mixed $value, bool $default = false): bool {
+        if (is_bool($value)) return $value;
+        $parsed = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        return $parsed ?? $default;
+    }
 
     public function has(string $key): bool {
         return isset($this->data[$key]);
@@ -723,6 +741,13 @@ class Config {
 
     public function all(): array {
         return $this->data;
+    }
+
+    /**
+     * Sets a value at runtime (useful for tests and for code that wants to override a setting).
+     */
+    public function set(string $key, string $value): void {
+        $this->data[$key] = $value;
     }
 }
 
@@ -1033,13 +1058,22 @@ class Utilities {
         return $randomizer->getBytesFromString($characters, $length);
     }
 
+    /**
+     * Returns the IP addresses of reverse proxies whose X-Forwarded-For header is trusted.
+     * Configure with TRUSTED_PROXIES="10.0.0.1, 10.0.0.2" in .env; defaults to localhost only.
+     */
+    public static function trustedProxies(): array {
+        $configured = Container::getInstance()->get(Config::class)->get('TRUSTED_PROXIES');
+        if ($configured === null || trim($configured) === '') {
+            return ['127.0.0.1', '::1'];
+        }
+        return array_values(array_filter(array_map('trim', explode(',', $configured)), 'strlen'));
+    }
+
     public static function ip(bool $pure = false): string {
         $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-        // Your trusted proxy servers IP addresses
-        $trustedProxies = ['127.0.0.1', '::1', '172.18.0.1']; 
-
-        if (in_array($ip, $trustedProxies)) {
+        if (in_array($ip, self::trustedProxies(), true)) {
             if (isset($_SERVER["HTTP_X_FORWARDED_FOR"])) {
                 $ip = $_SERVER["HTTP_X_FORWARDED_FOR"];
             } elseif (isset($_SERVER["HTTP_FORWARDED_FOR"])) {
@@ -1082,6 +1116,36 @@ class Utilities {
         $factor = pow(10, $decimals);
         return round($number * $factor) / $factor;
     }
+
+    private const TRANSLITERATION = [
+        'á' => 'a', 'ä' => 'a', 'à' => 'a', 'â' => 'a', 'ã' => 'a', 'å' => 'a', 'ą' => 'a', 'æ' => 'ae',
+        'č' => 'c', 'ć' => 'c', 'ç' => 'c', 'ď' => 'd', 'đ' => 'd',
+        'é' => 'e', 'ě' => 'e', 'ë' => 'e', 'è' => 'e', 'ê' => 'e', 'ę' => 'e',
+        'í' => 'i', 'ï' => 'i', 'ì' => 'i', 'î' => 'i', 'ł' => 'l', 'ľ' => 'l', 'ĺ' => 'l',
+        'ň' => 'n', 'ń' => 'n', 'ñ' => 'n',
+        'ó' => 'o', 'ö' => 'o', 'ò' => 'o', 'ô' => 'o', 'õ' => 'o', 'ø' => 'o', 'ő' => 'o', 'œ' => 'oe',
+        'ř' => 'r', 'ŕ' => 'r', 'š' => 's', 'ś' => 's', 'ş' => 's', 'ß' => 'ss', 'ť' => 't', 'ţ' => 't',
+        'ú' => 'u', 'ů' => 'u', 'ü' => 'u', 'ù' => 'u', 'û' => 'u', 'ű' => 'u',
+        'ý' => 'y', 'ÿ' => 'y', 'ž' => 'z', 'ź' => 'z', 'ż' => 'z',
+    ];
+
+    /**
+     * URL-friendly version of a string: "Příliš žluťoučký kůň" -> "prilis-zlutoucky-kun".
+     */
+    public static function slugify(string $text, int $maxLength = 200): string {
+        $text = mb_strtolower(trim($text), 'UTF-8');
+        $text = strtr($text, self::TRANSLITERATION);
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text);
+            if ($converted !== false) $text = $converted;
+        }
+        $text = preg_replace('/[^a-z0-9]+/', '-', $text);
+        $text = trim($text, '-');
+        if ($maxLength > 0 && strlen($text) > $maxLength) {
+            $text = rtrim(substr($text, 0, $maxLength), '-');
+        }
+        return $text;
+    }
 }
 
 class Date {
@@ -1096,11 +1160,11 @@ class Date {
         self::$timezoneOffset = $offset;
     }
 
-    public static function month($val): string {
+    public static function month(int $val): string {
 		return date("F", mktime(0, 0, 0, $val, 1, 2024));
 	}
 	
-	public static function day($val){
+	public static function day(int $val){
 		switch($val){
 			case 1: return "Monday";
 			case 2: return "Tuesday";
@@ -1455,7 +1519,8 @@ class Url {
         $queryParams[$name] = $value;
 
         $queryString = http_build_query($queryParams);
-        $resultUrl = "{$parsedUrl['scheme']}://{$parsedUrl['host']}{$parsedUrl['path']}?$queryString";
+        $port = isset($parsedUrl['port']) ? ":{$parsedUrl['port']}" : "";
+        $resultUrl = "{$parsedUrl['scheme']}://{$parsedUrl['host']}{$port}{$parsedUrl['path']}?$queryString";
 
         return $resultUrl;
     }
@@ -1470,7 +1535,8 @@ class Url {
 
         $queryParams = array_merge($queryParams, $params);
         $queryString = http_build_query($queryParams);
-        $resultUrl = "{$parsedUrl['scheme']}://{$parsedUrl['host']}{$parsedUrl['path']}?$queryString";
+        $port = isset($parsedUrl['port']) ? ":{$parsedUrl['port']}" : "";
+        $resultUrl = "{$parsedUrl['scheme']}://{$parsedUrl['host']}{$port}{$parsedUrl['path']}?$queryString";
 
         return $resultUrl;
     }
@@ -1656,9 +1722,183 @@ final class RequireMethod {
     ) {}
 }
 
-class ModelNotFoundException extends \Exception {
+/**
+ * Marks a controller (or a single action) as exempt from CSRF validation, e.g. for JSON APIs called by other clients.
+ */
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+final class SkipCsrf {}
+
+/**
+ * Requires the signed-in user to have at least the given permission level (Models\Permission::$level).
+ * A method-level attribute overrides the controller-level one. Anonymous visitors are sent to the login page,
+ * signed-in users without the level get a 403.
+ */
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+final class Authorize {
+    public function __construct(public int $level = 1) {}
+}
+
+/**
+ * Small, dependency-free input validation for controllers:
+ *
+ *   $v = Validator::make($_POST, [
+ *       'title'   => 'required|max:200',
+ *       'email'   => 'required|email',
+ *       'password'=> 'required|min:8|same:confirmPassword',
+ *       'status'  => 'in:draft,published',
+ *       'slug'    => ['slug', fn($value) => Article::slugTaken($value) ? "This slug is already used" : true],
+ *   ]);
+ *   if ($v->fails()) return $this->view("edit", ["errors" => $v->errors()]);
+ *   $clean = $v->validated();
+ *
+ * Rules: required, email, url, min:N, max:N (string length), integer, numeric, boolean, in:a,b,c, same:otherField,
+ * slug (letters, digits, dashes), alpha_dash. A closure rule returns true or an error message.
+ * Empty optional fields skip the remaining rules.
+ */
+class Validator {
+    /** @var array<string,string> field => first error message */
+    private array $errors = [];
+    private array $validated = [];
+
+    private function __construct(private array $data, private array $rules) {}
+
+    public static function make(array $data, array $rules): self {
+        $validator = new self($data, $rules);
+        $validator->run();
+        return $validator;
+    }
+
+    public function passes(): bool {
+        return $this->errors === [];
+    }
+
+    public function fails(): bool {
+        return !$this->passes();
+    }
+
+    /** @return array<string,string> */
+    public function errors(): array {
+        return $this->errors;
+    }
+
+    public function error(string $field): ?string {
+        return $this->errors[$field] ?? null;
+    }
+
+    public function firstError(): ?string {
+        return $this->errors === [] ? null : reset($this->errors);
+    }
+
+    /**
+     * Only the fields that have rules, with strings trimmed. Missing fields are returned as null.
+     */
+    public function validated(): array {
+        return $this->validated;
+    }
+
+    public static function label(string $field): string {
+        $words = preg_replace('/([a-z])([A-Z])/', '$1 $2', $field);
+        $words = str_replace(['_', '-'], ' ', $words);
+        return ucfirst(strtolower(trim($words)));
+    }
+
+    private function run(): void {
+        foreach ($this->rules as $field => $rules) {
+            if (is_string($rules)) {
+                $rules = $rules === '' ? [] : explode('|', $rules);
+            }
+
+            $value = $this->data[$field] ?? null;
+            if (is_string($value)) $value = trim($value);
+            $this->validated[$field] = $value;
+
+            $empty = $value === null || $value === '' || $value === [];
+            $required = in_array('required', $rules, true);
+
+            if ($empty) {
+                if ($required) {
+                    $this->errors[$field] = self::label($field) . " is required";
+                }
+                continue;
+            }
+
+            foreach ($rules as $rule) {
+                if ($rule === 'required') continue;
+                $message = $this->check($field, $value, $rule);
+                if ($message !== true) {
+                    $this->errors[$field] = $message;
+                    break;
+                }
+            }
+        }
+    }
+
+    private function check(string $field, mixed $value, mixed $rule): true|string {
+        $label = self::label($field);
+
+        if ($rule instanceof Closure) {
+            $result = $rule($value, $this->data);
+            if ($result === true || $result === null) return true;
+            return is_string($result) && $result !== '' ? $result : "$label is invalid";
+        }
+
+        [$name, $argument] = array_pad(explode(':', (string)$rule, 2), 2, null);
+        $string = is_scalar($value) ? (string)$value : '';
+
+        return match ($name) {
+            'email' => filter_var($string, FILTER_VALIDATE_EMAIL) !== false ?: "$label must be a valid email address",
+            'url' => filter_var($string, FILTER_VALIDATE_URL) !== false ?: "$label must be a valid URL",
+            'min' => mb_strlen($string) >= (int)$argument ?: "$label must be at least $argument characters",
+            'max' => mb_strlen($string) <= (int)$argument ?: "$label must be at most $argument characters",
+            'integer' => preg_match('/^-?\d+$/', $string) === 1 ?: "$label must be a whole number",
+            'numeric' => is_numeric($string) ?: "$label must be a number",
+            'boolean' => Config::parseBool($string, false) === Config::parseBool($string, true) ?: "$label must be yes or no",
+            'in' => in_array($string, array_map('trim', explode(',', (string)$argument)), true) ?: "$label must be one of: " . str_replace(',', ', ', (string)$argument),
+            'same' => $string === trim((string)($this->data[$argument] ?? '')) ?: "$label must match " . strtolower(self::label((string)$argument)),
+            'slug' => preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $string) === 1 ?: "$label may only contain lowercase letters, digits and dashes",
+            'alpha_dash' => preg_match('/^[A-Za-z0-9_-]+$/', $string) === 1 ?: "$label may only contain letters, digits, dashes and underscores",
+            default => throw new InvalidArgumentException("Unknown validation rule '$name'"),
+        };
+    }
+}
+
+/**
+ * An exception that maps directly onto an HTTP status code. The router turns it into a plain response
+ * (JSON for JSON requests) instead of the 500 error page.
+ */
+class HttpException extends \Exception {
+    private int $status;
+
+    public function __construct(int $status, string $message = "") {
+        parent::__construct($message !== "" ? $message : self::reasonPhrase($status), $status);
+        $this->status = $status;
+    }
+
+    public function getStatus(): int {
+        return $this->status;
+    }
+
+    public static function reasonPhrase(int $status): string {
+        return match ($status) {
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            409 => "Conflict",
+            410 => "Gone",
+            422 => "Unprocessable Content",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            503 => "Service Unavailable",
+            default => "HTTP " . $status,
+        };
+    }
+}
+
+class ModelNotFoundException extends HttpException {
     public function __construct(string $class, mixed $id) {
-        parent::__construct("Model '{$class}' with ID '{$id}' not found");
+        parent::__construct(404, "Model '{$class}' with ID '{$id}' not found");
     }
 }
 
@@ -1693,10 +1933,30 @@ class Router {
         $this->authenticationProvider = $authenticationProvider;
 
         DebugTimer::start('router.controller.glob');
-        $this->controllers = glob("controllers/*.php");
+        $this->controllers = self::discoverControllers("controllers");
         DebugTimer::stop('router.controller.glob');
 
         $this->loadRoutes();
+    }
+
+    /**
+     * Controller files, including sub-directories: controllers/admin/users.php holds Controllers\Admin\Users.
+     */
+    private static function discoverControllers(string $dir): array {
+        $files = glob($dir . "/*.php") ?: [];
+        foreach (glob($dir . "/*", GLOB_ONLYDIR) ?: [] as $subDir) {
+            $files = array_merge($files, self::discoverControllers($subDir));
+        }
+        return $files;
+    }
+
+    /**
+     * controllers/admin/users.php -> Controllers\admin\users (class names are case-insensitive in PHP).
+     */
+    private static function controllerClassFromFile(string $file): string {
+        $relative = preg_replace('#^controllers[\\\\/]#', '', str_replace('\\', '/', $file));
+        $relative = preg_replace('/\.php$/', '', $relative);
+        return "Controllers\\" . str_replace('/', '\\', $relative);
     }
 
     /* router cache from controller */
@@ -1709,6 +1969,10 @@ class Router {
         $cache = json_decode(file_get_contents($this->cacheFile), true);
 
         if (!isset($cache['hashes'])) {
+            return false;
+        }
+        
+        if (count($cache['hashes']) !== count($this->controllers)) {
             return false;
         }
 
@@ -1780,11 +2044,11 @@ class Router {
         $routes = [];
 
         foreach ($this->controllers as $controller) {
-            $controllerName = basename($controller, ".php");
-            $controllerClass = "Controllers\\" . $controllerName;
+            $controllerClass = self::controllerClassFromFile($controller);
 
             if (class_exists($controllerClass)) {
                 $reflection = new ReflectionClass($controllerClass);
+                $controllerClass = $reflection->getName();
 
                 if ($reflection->isSubclassOf(Controller::class)) {
                     $methods = $reflection->getMethods(ReflectionMethod::IS_PUBLIC);
@@ -1827,43 +2091,64 @@ class Router {
         return $routes;
     }
 
-    public static function url(bool $full = false, bool $_request = false): string {
-        $url = $_GET['url'] ?? '';
-        $url = trim($url, '/');
-        
-        if (isset($_SERVER['SCRIPT_NAME'])) {
-            $scriptDir = trim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
-            if ($scriptDir !== '' && str_starts_with($url, $scriptDir)) {
-                $url = substr($url, strlen($scriptDir));
-                $url = trim($url, '/');
+    /**
+     * Path of the current request relative to the application root, without leading/trailing slashes
+     * ("article/edit/5"). Uses the `url` query parameter when the web server rewrite provides it
+     * (Apache .htaccess), otherwise REQUEST_URI minus the directory index.php lives in.
+     */
+    public static function currentPath(): string {
+        if (isset($_GET['url'])) {
+            $url = trim((string)$_GET['url'], '/');
+
+            if (isset($_SERVER['SCRIPT_NAME'])) {
+                $scriptDir = trim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+                if ($scriptDir !== '' && str_starts_with($url, $scriptDir)) {
+                    $url = trim(substr($url, strlen($scriptDir)), '/');
+                }
             }
+
+            return $url;
         }
 
-        $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
-        $http = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+        $path = explode('?', $_SERVER['REQUEST_URI'] ?? '/', 2)[0];
+        $scriptDir = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/index.php'));
+        if ($scriptDir !== '/' && $scriptDir !== '.' && str_starts_with($path, $scriptDir)) {
+            $path = substr($path, strlen($scriptDir));
+        }
+
+        return trim(rawurldecode($path), '/');
+    }
+
+    /**
+     * Absolute URL of the application root ("http://host/sub/app"), or with $full the URL of the current request.
+     * Works with Apache rewrites (url= parameter), nginx and PHP's built-in server alike.
+     */
+    public static function url(bool $full = false, bool $_request = false): string {
+        $scheme = Request::isHttps() ? 'https' : 'http';
+        $host = $_SERVER['SERVER_NAME'] ?? 'localhost';
         $port = self::getPort();
-        
-        $requestParts = explode('?', $requestUri);
+
+        $requestParts = explode('?', $_SERVER['REQUEST_URI'] ?? '/', 2);
         $requestPath = rtrim($requestParts[0], '/') . '/';
-        
+
         if ($full) {
             $query = $_request && isset($requestParts[1]) ? '?' . $requestParts[1] : '';
-            $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}{$query}";
-        } else {
-            if ($url !== '' && str_ends_with(trim($requestPath, '/'), $url)) {
-                $basePath = preg_replace('#' . preg_quote($url, '#') . '/?$#', '', trim($requestPath, '/'));
-                $basePath = trim($basePath, '/');
-                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}/" . ($basePath !== '' ? $basePath . '/' : '');
-            } else {
-                $ret = "{$http}://{$_SERVER['SERVER_NAME']}{$port}{$requestPath}";
-            }
+            return rtrim("{$scheme}://{$host}{$port}{$requestPath}", '/') . $query;
         }
-        return rtrim($ret, '/');
+
+        // Base = request path minus the part the router handles.
+        $routed = self::currentPath();
+        $base = trim(rawurldecode($requestPath), '/');
+        if ($routed !== '' && str_ends_with($base, $routed)) {
+            $base = trim(substr($base, 0, strlen($base) - strlen($routed)), '/');
+        }
+
+        return rtrim("{$scheme}://{$host}{$port}/" . ($base !== '' ? $base . '/' : ''), '/');
     }
 
     public static function getPort(): string {
-        $port = $_SERVER['SERVER_PORT'];
-        if ($port == 80 || $port == 443) {
+        $port = $_SERVER['SERVER_PORT'] ?? null;
+        if ($port === null || $port == 80 || $port == 443) {
             return '';
         }
         return ":{$port}";
@@ -1888,7 +2173,7 @@ class Router {
         $path = $this->combineOptionalSegments($path);
         $pattern = $this->buildRegexPattern($path);
         
-        $this->routes[] = [
+        $route = [
             'pattern' => $path,
             'regex' => $pattern,
             'handler' => $handler,
@@ -1899,6 +2184,11 @@ class Router {
             'method' => $method,
             'name' => $name,
         ];
+        $this->routes[] = $route;
+        
+        if ($name !== null && is_array($handler)) {
+            $this->routesByName[$name][] = $route;
+        }
     }
 
     public function addControllerActionFallback(string $pattern = '<controller>/<action=index>'): void {
@@ -1914,20 +2204,49 @@ class Router {
 
             $this->processVariables($variables);
 
-            try {                
-                $this->callController([$controllerName, $action], $variables, null);
-            } catch (ControllerMethodNotAllowedException $e) {
-                $this->procesed[] = "Controller method not allowed: " . $e->getMessage();
-                http_response_code(405);
-                echo "Method Not Allowed";
-                exit();
-            } catch (ModelNotFoundException $e) {
-                $this->procesed[] = "Model not found: " . $e->getMessage();
-                http_response_code(404);
-                echo "Not Found";
-                exit();
+            try {
+                $this->callController([$controllerName, $action], $variables, null, true);
+            } catch (HttpException $e) {
+                $this->sendHttpError($e);
             }
         });
+    }
+    /** @var null|callable(HttpException): void */
+    private $httpErrorHandler = null;
+
+    /**
+     * Replaces the default plain-text error response with your own (e.g. a themed 404 page).
+     * The handler receives the HttpException and must send the complete response and exit (or throw);
+     * if it simply returns, request processing continues as if no route had matched.
+     */
+    public function setHttpErrorHandler(?callable $handler): void {
+        $this->httpErrorHandler = $handler;
+    }
+
+    /**
+     * Turns an HttpException into a minimal response: status code plus a plain-text (or JSON) body.
+     */
+    public function sendHttpError(HttpException $e): void {
+        $this->procesed[] = "HTTP " . $e->getStatus() . ": " . $e->getMessage();
+
+        if ($this->httpErrorHandler !== null) {
+            ($this->httpErrorHandler)($e);
+            return;
+        }
+
+        if (ob_get_level()) {
+            ob_clean();
+        }
+        http_response_code($e->getStatus());
+
+        if ($this->request->isJsonRequest()) {
+            header('Content-Type: application/json');
+            echo json_encode(['status' => 'error', 'code' => $e->getStatus(), 'message' => $e->getMessage()]);
+        } else {
+            header('Content-Type: text/plain; charset=utf-8');
+            echo $e->getMessage();
+        }
+        exit();
     }
 
     public function redirect(string $path): void {
@@ -1944,6 +2263,7 @@ class Router {
         $this->matchedUrl = $url;
 
         $this->processQueryParameters();
+        Csrf::ensureCookie();
 
         foreach ($this->routes as $key => $route) {
             if ($this->matchRoute($url, $route, $key)) {
@@ -1960,17 +2280,8 @@ class Router {
 
                     try {
                         $this->callController($matchedRoute['handler'], $matchedRoute['variables'], $matchedRoute['method']);
-                    } catch (ControllerMethodNotAllowedException $e) {
-                        $this->procesed[] = "Controller method not allowed: " . $e->getMessage();
-                        http_response_code(405);
-                        echo "Method Not Allowed";
-                        exit();
-                    } catch (ModelNotFoundException $e) {
-                        $this->procesed[] = "Model not found: " . $e->getMessage();
-                        http_response_code(404);                        
-
-                        echo "Not Found";
-                        exit();
+                    } catch (HttpException $e) {
+                        $this->sendHttpError($e);
                     }
                 } else if ($matchedRoute['redirect']) {
                     $this->procesed[] = "Called by redirect";
@@ -1984,6 +2295,15 @@ class Router {
         }
 
         DebugTimer::stop("router.start");
+    }
+
+    /**
+     * Absolute URL of a named route, e.g. Router::urlFor('article.edit', ['id' => 5]).
+     * Available in templates as {route 'article.edit', ['id' => $id]}.
+     */
+    public static function urlFor(string $name, array $params = []): string {
+        $path = Container::getInstance()->get(Router::class)->generateUrl($name, $params);
+        return self::url() . '/' . $path;
     }
 
     public function generateUrl(string $name, array $params = []): string {
@@ -2001,8 +2321,10 @@ class Router {
     }
 
     private function patternAcceptsParams(string $pattern, array $params): bool {
-        // required = segments with <name> NOT wrapped in [...]
-        preg_match_all('/(?<!\[[^\]]*)<([^>=]+)(?:=[^>]*)?>/', $pattern, $matches);
+        // required = <name> placeholders that are NOT inside an optional [...] group.
+        // (Implemented by stripping the optional groups first; PCRE does not allow variable-length lookbehinds.)
+        $withoutOptional = preg_replace('/\[[^\[\]]*\]/', '', $pattern);
+        preg_match_all('/<([^>=]+)(?:=[^>]*)?>/', $withoutOptional, $matches);
         $required = $matches[1] ?? [];
 
         foreach ($required as $name) {
@@ -2061,18 +2383,31 @@ class Router {
         return null;
     }
 
-    private function callController(array $definition, ?array $variables = null, ?Method $httpMethod = Method::UNKNOWN): void {
+    /**
+     * @param bool $notFoundAsHttp When the class/method comes from the URL (controller/action fallback) an unknown
+     *                             controller is a 404 for the visitor, not a programming error.
+     */
+    private function callController(array $definition, ?array $variables = null, ?Method $httpMethod = Method::UNKNOWN, bool $notFoundAsHttp = false): void {
         if (!is_array($definition)) throw new Exception("Definition must be array [class, method]");
         $class = $originalClass = (string)$definition[0];
         $methodNameOrCallback = count($definition) > 1 ? $definition[1] : "index";
 
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $class)) {
+            if ($notFoundAsHttp) throw new HttpException(404);
+            throw new Exception("Invalid controller name '$originalClass'");
+        }
+
         if (substr($class, 0, strlen("Controllers\\")) != "Controllers\\") $class = "Controllers\\" . $class;
         if (!class_exists($class) && class_exists($class . "Controller")) $class .= "Controller";
 
-        if (!class_exists($class))
+        if (!class_exists($class)) {
+            if ($notFoundAsHttp) throw new HttpException(404);
             throw new Exception("Class $originalClass not exists");
-        if (!is_subclass_of($class, "Controller"))
+        }
+        if (!is_subclass_of($class, "Controller")) {
+            if ($notFoundAsHttp) throw new HttpException(404);
             throw new Exception("Class $originalClass not implement class \"Controller\"");
+        }
 
         $instance = Container::getInstance()->create($class);
 
@@ -2090,8 +2425,11 @@ class Router {
 
         if ($method == null || $method == "") $method = "index";
 
-        if (!method_exists($instance, $method))
+        if (!is_string($method) || !method_exists($instance, $method) || !(new ReflectionMethod($instance, $method))->isPublic()
+            || str_starts_with($method, '__') || method_exists(Controller::class, $method)) {
+            if ($notFoundAsHttp) throw new HttpException(404);
             throw new Exception("Method '$method' not found in class '$class'");
+        }
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
         $methodName = $this->request->method()->name;
@@ -2134,6 +2472,14 @@ class Router {
 
                 throw new ControllerMethodNotAllowedException($requiredMethod);
             }
+
+            //Check auth requirements and redirect to login if needed at start of the method call, before any model binding or other processing.
+            if ($this->needAuthentication($reflectionMethod)) {
+                $this->redirectToLoginIfNeeded();
+            }
+
+            $this->enforceAuthorization($reflectionMethod);
+            $this->enforceCsrf($reflectionMethod);
 
             $methodParams = $reflectionMethod->getParameters();
             $resolvedParams = [];
@@ -2194,6 +2540,7 @@ class Router {
                 }
             }
 
+            // Check authentication again after resolving parameters, in case the controller method has attributes that depend on the parameters (e.g., model-based authorization).
             if ($this->needAuthentication($reflectionMethod)) {
                 $this->redirectToLoginIfNeeded();
             }
@@ -2240,6 +2587,66 @@ class Router {
             return false;
         }
         return $reflectionMethod->getAttributes(AllowAnonymous::class) === [];    
+    }
+
+    /**
+     * #[Authorize(level: N)] on the action (or, as a fallback, on the controller): the signed-in user's permission
+     * level must be at least N. Anonymous visitors go to the login page; others get a 403.
+     */
+    private function enforceAuthorization(ReflectionMethod $reflectionMethod): void {
+        $attributes = $reflectionMethod->getAttributes(Authorize::class);
+        if ($attributes === []) {
+            $attributes = (new ReflectionClass($reflectionMethod->class))->getAttributes(Authorize::class);
+        }
+        if ($attributes === []) return;
+
+        if (!USE_USERS) {
+            throw new Exception("#[Authorize] needs the user service (USE_USERS)");
+        }
+
+        $required = $attributes[0]->newInstance()->level;
+        $userService = Container::getInstance()->get(UserService::class);
+
+        if (!$userService->isAuthentificated()) {
+            $this->redirectToLoginIfNeeded();
+            throw new HttpException(401, "You need to sign in to access this page");
+        }
+        if (!$userService->can($required)) {
+            throw new HttpException(403, "You don't have permission to access this page");
+        }
+    }
+
+    /**
+     * CSRF policy: every state-changing request (anything but GET/HEAD/OPTIONS) to a controller action must carry
+     * a valid token, unless the action or its controller is marked #[SkipCsrf], the request body is JSON
+     * (cross-origin JSON needs a CORS preflight, which is only granted where Response::enableCors() is used),
+     * or CSRF_PROTECTION is defined as false.
+     */
+    private function enforceCsrf(ReflectionMethod $reflectionMethod): void {
+        if (!Csrf::enabled()) return;
+        if ($this->request->is(Method::GET) || $this->request->is('OPTIONS')) return;
+        if ($this->request->hasJsonBody()) return;
+
+        $classReflection = new ReflectionClass($reflectionMethod->class);
+        if ($classReflection->getAttributes(SkipCsrf::class) !== [] || $reflectionMethod->getAttributes(SkipCsrf::class) !== []) {
+            return;
+        }
+
+        if (!Csrf::validate(Csrf::tokenFromRequest($this->request))) {
+            throw new CsrfTokenMismatchException();
+        }
+    }
+
+    /**
+     * True when the matched action produces (or leaves room for) a full HTML page, false when it answers
+     * with JSON, a redirect or a standalone component. Lets index.php skip the page shell (navigation,
+     * flash messages) for responses that never show it.
+     */
+    public function rendersPage(): bool {
+        if ($this->controllerData === null) return true;
+        $type = $this->controllerData->getType();
+        if ($type === ControllerActionType::None) return true;
+        return $type === ControllerActionType::View && !$this->controllerData->shouldClearContent();
     }
 
     public function tryProcessController(): bool {
@@ -2323,31 +2730,7 @@ class Router {
     }
 
     public function getCurrentUrl(): string {
-        if (isset($_GET['url'])) {
-            $url = trim($_GET['url'], '/');
-            
-            if (isset($_SERVER['SCRIPT_NAME'])) {
-                $scriptDir = trim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
-                if ($scriptDir !== '' && str_starts_with($url, $scriptDir)) {
-                    $url = substr($url, strlen($scriptDir));
-                    $url = trim($url, '/');
-                }
-            }
-            
-            return $url;
-        }
-        
-        $requestUri = $_SERVER['REQUEST_URI'] ?? '';
-        $scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
-        
-        $path = explode('?', $requestUri)[0];
-        $base = dirname($scriptName);
-        
-        if (strpos($path, $base) === 0) {
-            $path = substr($path, strlen($base));
-        }
-        
-        return trim($path, '/');
+        return self::currentPath();
     }
 
     private function matchRoute(string $url, array $route, int $key): bool {
@@ -2399,11 +2782,11 @@ class Router {
     }
 
     private function processQueryParameters(): void {
-        $queryString = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
+        $queryString = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_QUERY);
         if ($queryString) {
             parse_str($queryString, $queryParams);
             foreach ($queryParams as $key => $value) {
-                $_GET[$key] = urldecode($value);
+                $_GET[$key] = $value;
             }
         }
     }
@@ -2416,10 +2799,10 @@ class Router {
     }
 
     public function dump(): void {
-        echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl??"") . ' >>>> currl="'.$this->getCurrentUrl().'" >>>> url="'.$_GET["url"].'"</div>';
+        echo '<div style="padding:7px;">Matching URL: ' . htmlspecialchars($this->matchedUrl??"") . ' >>>> currl="'.htmlspecialchars($this->getCurrentUrl()).'" >>>> url="'.htmlspecialchars($_GET["url"] ?? '').'"</div>';
         echo "<div style='padding:7px;'>";
         foreach($this->procesed as $p) {
-            echo "<div>$p</div>";
+            echo "<div>".htmlspecialchars($p)."</div>";
         }
         echo "</div>";
         echo '<table style="width:100%; border-collapse:collapse; table-layout:fixed;">';
@@ -2478,22 +2861,24 @@ class Page {
     }
 
     public function head() {
+        $e = fn(string $s) => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
         echo "<head>".PHP_EOL;
-		echo '<title>' . $this->title . '</title>'.PHP_EOL;
-		echo '<meta http-equiv="Content-Type" content="text/html; charset=' . $this->charset . '">'.PHP_EOL;
+		echo '<title>' . $e($this->title) . '</title>'.PHP_EOL;
+		echo '<meta http-equiv="Content-Type" content="text/html; charset=' . $e($this->charset) . '">'.PHP_EOL;
 
         if($this->description != "")
-		    echo '<meta name="description" content="' . $this->description . '">'.PHP_EOL;
+		    echo '<meta name="description" content="' . $e($this->description) . '">'.PHP_EOL;
         if($this->language != "")
-		    echo '<meta http-equiv="Content-language" content="' . $this->language . '">'.PHP_EOL;
+		    echo '<meta http-equiv="Content-language" content="' . $e($this->language) . '">'.PHP_EOL;
         if($this->author != "")
-		    echo '<meta name="author" content="' . $this->author . '">'.PHP_EOL;
+		    echo '<meta name="author" content="' . $e($this->author) . '">'.PHP_EOL;
         if($this->keywoards != "")
-		    echo '<meta name="keywords" content="' . $this->keywoards . '">'.PHP_EOL;
+		    echo '<meta name="keywords" content="' . $e($this->keywoards) . '">'.PHP_EOL;
 
 		echo '<meta name="viewport" content="width=device-width, initial-scale=1">'.PHP_EOL;
 		if($this->browserColor != "")
-			echo '<meta name="theme-color" content="'.$this->browserColor.'">'.PHP_EOL;
+			echo '<meta name="theme-color" content="'.$e($this->browserColor).'">'.PHP_EOL;
 		
 		echo '<link href="' . Router::url() . '/favicon.ico?cache='.CACHE.'" rel="icon">'.PHP_EOL;		
 
@@ -2554,6 +2939,13 @@ class Layout {
 				throw new Exception('Failed to create directorie /temp/templates/');
 			}
 		}
+        // Sweep stale compiled templates at most once per hour instead of on every request.
+        $marker = ROOT."/temp/templates/.gc";
+        $lastSweep = @filemtime($marker);
+        if ($lastSweep !== false && $lastSweep > time() - 3600) {
+            return;
+        }
+        @touch($marker);
 
 		//Remove old temp files
 		$timeMaxOld = strtotime("-1 week");
@@ -2576,7 +2968,7 @@ class Layout {
 
 		$name = pathinfo($filename, PATHINFO_FILENAME);
 		$content = file_get_contents($filename);
-		$hash = sha1($content);
+		$hash = sha1(TemplaterV2::VERSION . "\0" . $content);
 		if (defined('DEBUG')) {
 			$hash = 'debug';
 		}
@@ -2638,6 +3030,8 @@ class TemplaterV2Exception extends \Exception {
 }
 
 class TemplaterV2 {
+    public const VERSION = "3";
+
     private $content = [];
 	private $fileName = "";
     private $contentLen = 0;
@@ -2668,6 +3062,20 @@ class TemplaterV2 {
         $this->content = $this->utf8Split($content);
         $this->contentLen = count($this->content);
 		$this->fileName = $fileName;
+    }
+    /**
+     * Output escaper used by compiled templates for every {$expression}.
+     * Strings (and Stringable objects) are HTML-escaped; null becomes ""; int/float/bool pass through
+     * unchanged so that the conditional attribute syntax (checked="{$bool}") keeps working.
+     * Use {!$expression} to output raw HTML on purpose.
+     */
+    public static function e(mixed $value): mixed {
+        if ($value === null) return "";
+        if (is_string($value)) return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        if (is_int($value) || is_float($value) || is_bool($value)) return $value;
+        if ($value instanceof \Stringable) return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        if (is_array($value)) throw new \InvalidArgumentException("Cannot output an array in a template; use {^\$var} to dump it or iterate with {for}.");
+        throw new \InvalidArgumentException("Cannot output value of type " . get_debug_type($value) . " in a template.");
     }
 
     private function printToken(array $token) {
@@ -2987,7 +3395,7 @@ class TemplaterV2 {
 		return $output;
     }
 
-	private function parserParams($params, $len = null){
+	private function parserParams(string $params, ?int $len = null){
 		$outpar = [];
 		$open = null;
 		$index = 0;
@@ -3036,7 +3444,8 @@ class TemplaterV2 {
 		$this->eat(TokenType::$LBRACKET);	//{
 		$this->eat(TokenType::$SLASH);		//\
 		$this->eat();						//name
-		$this->eat(TokenType::$RBRACKET);	//}
+		// The closing "}" is intentionally left for the caller (parseBlock eats one token after every control),
+		// otherwise the first token after {/capture} / {/function} was swallowed.
 	}
 
 	private function registerOpenControll(string $name, $token) {
@@ -3074,6 +3483,26 @@ class TemplaterV2 {
 		} else if(substr($type[0], 0, 1) == "^" ){
 			$variable = trim(substr($input, 1, strlen($input) - 1));
             return "<?php echo Utilities::vardump(".$variable."); ?>";
+		} else if(substr($type[0], 0, 1) == "!" || substr($type[0], 0, 3) == "raw"){ //TODO: propably use different controll for this, because this is not very clear like "raw"
+            // {!$html} | {raw $html} -> raw, unescaped output
+            if(substr($type[0], 0, 1) == "!") {
+                $expression = trim(substr($input, 1, strlen($input) - 1));
+            } else {
+                $expression = trim(substr($input, 3, strlen($input) - 3));
+            }
+            return "<?php echo ".trim($expression)."; ?>";
+		} else if($type == "csrf") {
+            // {csrf} -> hidden input with the anti-CSRF token
+            return "<?php echo Csrf::field(); ?>";
+		} else if($type == "flash") {
+            // {flash} -> pending one-shot messages (Flash::success() etc.), rendered once
+            return "<?php echo Flash::render(); ?>";
+		} else if($type == "route") {
+            // {route 'name'} or {route 'name', ['id' => $id]} -> absolute URL of a named route
+			$params = $this->parserParams($value, 1);
+            $name = trim($params[0]);
+            $routeParams = isset($params[1]) && trim($params[1]) !== "" ? $this->toPhp($params[1]) : "[]";
+            return "<?php echo Router::urlFor(".$name.", ".$routeParams."); ?>";
 		} else if($type == "if") {
 			$this->registerOpenControll("if", $token);
             return "<?php if(".$value.") { ?>";
@@ -3172,7 +3601,8 @@ class TemplaterV2 {
             return "<?php } ?>";
         }
 
-        return "<?php echo ".$input."; ?>";
+        // {$expression} -> escaped output (see TemplaterV2::e). Use {!$expression} | {raw $expression} for raw HTML.
+        return "<?php echo TemplaterV2::e(".$input."); ?>";
     }
 
     private function toPhp(string $code) {
@@ -3464,11 +3894,15 @@ class TokenType {
 }
 
 class Cookies {		
+    private static ?string $secret = null;
+
     private static function getSecret(): string {
+        if (self::$secret !== null) return self::$secret;
+
         $file = __DIR__ . '/secret.json';
         if (!file_exists($file)) {
             $dataToSave = [
-                "cookies" => bin2hex(random_bytes(16))
+                "cookies" => bin2hex(random_bytes(32))
             ];
             file_put_contents($file, json_encode($dataToSave, JSON_PRETTY_PRINT), LOCK_EX);
         }
@@ -3480,11 +3914,53 @@ class Cookies {
         }
 
         if(!isset($config["cookies"])) {
-            $config["cookies"] = bin2hex(random_bytes(16));
+            $config["cookies"] = bin2hex(random_bytes(32));
             file_put_contents($file, json_encode($config, JSON_PRETTY_PRINT), LOCK_EX);
         }
 
-        return $config["cookies"];
+        self::$secret = $config["cookies"];
+        return self::$secret;
+    }
+
+    /**
+     * Server-side secret shared by cookie signing and CSRF tokens.
+     */
+    public static function secret(): string {
+        return self::getSecret();
+    }
+
+    /**
+     * Converts the accepted expiration formats into an absolute Unix timestamp.
+     *   int    -> seconds from now (0 = session cookie)
+     *   string -> strtotime() expression, e.g. "+1 day" or "-1 hour"
+     */
+    public static function expiresAt(int|string $time): int {
+        if (is_int($time)) {
+            return $time === 0 ? 0 : time() + $time;
+        }
+        $ts = strtotime($time);
+        if ($ts === false) {
+            throw new InvalidArgumentException("Invalid cookie expiration: '$time'");
+        }
+        return $ts;
+    }
+
+    private static function isDeletion(int|string $time): bool {
+        return is_int($time) ? $time < 0 : str_starts_with(trim($time), "-");
+    }
+
+    private static function options(int $expires): array {
+        return [
+            'expires'  => $expires,
+            'path'     => '/',
+            'secure'   => Request::isHttps(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ];
+    }
+
+    private static function signature(string $name, string $value): string {
+        return hash_hmac('sha256', $name . "|" . $value, self::getSecret());
     }
 
 	/*
@@ -3493,10 +3969,13 @@ class Cookies {
 		Cookies::set( array("name", "permision"), array("test", "admin"), "+24 hour" );
 		Cookies::set( array("name", "permision"), "admin", "+24 hour" );
 		Cookies::set( "name", "test", "+24 hour" );
+
+        $time: int = seconds from now (0 = until the browser closes), string = strtotime() expression.
+        Every cookie gets a companion SECURITY_<name> cookie carrying an HMAC so that tampering is detected.
 	*/
 	public static function set(string | array $name, mixed $value = 1, mixed $time = "+1 hour"): bool {
-		if($time == false){
-			if($value == 1){ $value = "+1 hour"; } 
+		if($time === false){
+			if($value == 1){ $value = "+1 hour"; }
 			foreach($name as $key => $val){
 				Cookies::set($key, $val, $value);
 			}
@@ -3509,24 +3988,26 @@ class Cookies {
 				Cookies::set($name[$i], $value, $time);
 			}
 		}else{
-			if(substr($time, 0, 1) != "-"){
+            $value = (string)$value;
+            $expires = self::expiresAt($time);
+            $deleting = self::isDeletion($time);
+
+			if(!$deleting){
 				$_COOKIE[$name] = $value;
 			}else{
-				unset($_COOKIE[$name]);
+				unset($_COOKIE[$name], $_COOKIE["SECURITY_".$name]);
 			}
 
-            if($time === 0) {
-                setcookie($name, $value, 0, "/");
-            }else {
-                setcookie($name, $value, (is_int($time)? time() + $time: strtotime($time)), "/");
-            }
+            setcookie($name, $value, self::options($expires));
 
-			if(substr($time, 0, 1) != "-"){				
-				$hash = sha1($name.$value.self::getSecret());
+			if(!$deleting){
+				$hash = self::signature($name, $value);
 				$url  = Router::url();
-				setcookie("SECURITY_".$name, $hash.";;".time().";;".$url, (is_int($time)? time() + $time: strtotime($time)), "/");
-			}else{				
-				setcookie("SECURITY_".$name, "", strtotime("-1 hour"), "/");
+                $security = $hash.";;".time().";;".$url;
+                $_COOKIE["SECURITY_".$name] = $security;
+				setcookie("SECURITY_".$name, $security, self::options($expires));
+			}else{
+				setcookie("SECURITY_".$name, "", self::options(time() - 3600));
 				return false;
 			}
 		}
@@ -3546,9 +4027,7 @@ class Cookies {
 	}
 	
 	public static function exists(string $name): bool {
-		if(isset($_COOKIE[$name])){
-			return true;
-		}else return false;
+		return isset($_COOKIE[$name]);
 	}
 
     public static function get_security(string $name): string | bool {
@@ -3559,22 +4038,20 @@ class Cookies {
 	
 	public static function security_check(string $name): bool {
 		$security = Cookies::security_get($name);
-		if($security != false){			
-			if(sha1($name.$_COOKIE[$name].self::getSecret()) == $security["hash"])
-				return true;
-			else
-				return false;
-		}else 
+		if($security === false || !isset($_COOKIE[$name])) {
             return false;
+        }
+        $expected = self::signature($name, (string)$_COOKIE[$name]);
+        return hash_equals($expected, (string)$security["hash"]);
 	}
 	
 	public static function security_get(string $name): array | bool {
-		if(Cookies::exists($name)){
-			$data = explode(";;",$_COOKIE["SECURITY_".$name],3);
+		if(isset($_COOKIE["SECURITY_".$name])){
+			$data = explode(";;", $_COOKIE["SECURITY_".$name], 3);
 			return array(
-				"hash" 		=> $data[0],
-				"create" 	=> $data[1],
-				"url"		=> $data[2]
+				"hash" 		=> $data[0] ?? "",
+				"create" 	=> $data[1] ?? "",
+				"url"		=> $data[2] ?? ""
 			);
 		}else return false;
 	}
@@ -3585,7 +4062,7 @@ class Cookies {
 			if(count($dt)>1){ 
 				if($dt[0] == "SECURITY"){ 
 					if(!Cookies::exists($dt[1])){ 
-						setcookie($key, "", strtotime("-1 hour")); 			
+						setcookie($key, "", self::options(time() - 3600)); 			
 					} 
 				} 
 			}
@@ -3601,26 +4078,187 @@ class Cookies {
 	}
 	
 	public static function dump($onlyName = false) {
+        $e = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 		echo "<table style='table-layout: fixed; border-collapse: collapse;width:100%;' border=0 class='snowLeopard'>";
 		if($onlyName){
 			echo "<tr style='border: 1px solid black;'><th>Key</th></tr>";
 			foreach($_COOKIE as $key => $value){
 				$dt = explode("_",$key,2);
+                $value = $e($value);
 				if(count($dt)>1){ if($dt[0] == "SECURITY"){ if(!Cookies::exists($dt[1])){ $value="<i>DELETED SECURITY COOKIES</i>"; } } }
-				echo "<tr><td style='".($dt[0] == "SECURITY"?"color:red;font-weight:bold;":"")."'>".$key."<br><small>".$value."</small></td></tr>";
+				echo "<tr><td style='".($dt[0] == "SECURITY"?"color:red;font-weight:bold;":"")."'>".$e($key)."<br><small>".$value."</small></td></tr>";
 			}
 		}else{
 			echo "<tr style='border: 1px solid black;'><th width=300>Key</th><th width=600>Value</th></tr>";
 			foreach($_COOKIE as $key => $value){
 				$dt = explode("_",$key,2);
+                $value = $e($value);
 				if(count($dt)>1){ if($dt[0] == "SECURITY"){ if(!Cookies::exists($dt[1])){ $value="<i>DELETED SECURITY COOKIES</i>"; } } }
-				echo "<tr><td style='".($dt[0] == "SECURITY"?"color:red;font-weight:bold;":"")."'>".$key."</td><td>".$value."</td></tr>";
+				echo "<tr><td style='".($dt[0] == "SECURITY"?"color:red;font-weight:bold;":"")."'>".$e($key)."</td><td>".$value."</td></tr>";
 			}
 		}
 		if(count($_COOKIE) == 0)
-			echo "<tr><td colspan=2>Žádné cookies...</td></tr>";
+			echo "<tr><td colspan=2>No cookies...</td></tr>";
 		echo "</table>";
 	}
+}
+
+/**
+ * Anti-CSRF tokens without PHP sessions: a random nonce lives in an HttpOnly cookie,
+ * the form carries "nonce.hmac(secret, nonce)". A request is valid when the token's HMAC verifies
+ * and its nonce equals the cookie (double-submit + signature, so a cookie injected from a sibling
+ * subdomain is not enough).
+ */
+class Csrf {
+    public const COOKIE = "csrf";
+    public const FIELD = "_csrf";
+    public const HEADER = "X-CSRF-Token";
+
+    private static ?string $nonce = null;
+
+    public static function enabled(): bool {
+        return !defined("CSRF_PROTECTION") || CSRF_PROTECTION;
+    }
+
+    private static function nonce(): string {
+        if (self::$nonce !== null) return self::$nonce;
+
+        $existing = $_COOKIE[self::COOKIE] ?? null;
+        if (is_string($existing) && preg_match('/^[a-f0-9]{32}$/', $existing)) {
+            self::$nonce = $existing;
+            return self::$nonce;
+        }
+
+        self::$nonce = bin2hex(random_bytes(16));
+        $_COOKIE[self::COOKIE] = self::$nonce;
+        setcookie(self::COOKIE, self::$nonce, [
+            'expires'  => 0,
+            'path'     => '/',
+            'secure'   => Request::isHttps(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        return self::$nonce;
+    }
+
+    private static function sign(string $nonce): string {
+        return hash_hmac('sha256', "csrf|" . $nonce, Cookies::secret());
+    }
+
+    /**
+     * Token for the current visitor; embed it in forms (see field()) or send it as the X-CSRF-Token header.
+     */
+    public static function token(): string {
+        $nonce = self::nonce();
+        return $nonce . "." . self::sign($nonce);
+    }
+
+    public static function field(): string {
+        return '<input type="hidden" name="' . self::FIELD . '" value="' . self::token() . '">';
+    }
+
+    /**
+     * Makes sure the csrf cookie exists early in the request (before any output).
+     */
+    public static function ensureCookie(): void {
+        if (self::enabled()) self::nonce();
+    }
+
+    public static function validate(?string $token): bool {
+        if ($token === null || !str_contains($token, ".")) return false;
+        [$nonce, $signature] = explode(".", $token, 2);
+
+        if (!preg_match('/^[a-f0-9]{32}$/', $nonce)) return false;
+        if (!hash_equals(self::sign($nonce), $signature)) return false;
+
+        $cookie = $_COOKIE[self::COOKIE] ?? null;
+        return is_string($cookie) && hash_equals($cookie, $nonce);
+    }
+
+    /**
+     * Token as sent by the current request: the _csrf form field or the X-CSRF-Token header.
+     */
+    public static function tokenFromRequest(Request $request): ?string {
+        $token = $_POST[self::FIELD] ?? null;
+        if ($token === null) {
+            $token = $request->headerIgnoreCase(self::HEADER);
+        }
+        return is_string($token) ? $token : null;
+    }
+
+    /** Test helper: forget the cached nonce so the next call re-reads $_COOKIE. */
+    public static function reset(): void {
+        self::$nonce = null;
+    }
+}
+/**
+ * One-shot messages shown on the next page (the "redirect after POST" pattern), stored in a signed cookie
+ * because the framework has no server-side session.
+ *
+ *   Flash::success("Article saved");           in the controller, before redirecting
+ *   {flash}                                    in the layout/view, renders and clears the messages
+ */
+class Flash {
+    public const COOKIE = "flash";
+    public const LIFETIME = 300;
+
+    private static ?array $pulled = null;
+
+    public static function add(string $type, string $message): void {
+        $messages = self::peek();
+        $messages[] = ['type' => $type, 'message' => $message];
+        Cookies::set(self::COOKIE, json_encode($messages, JSON_UNESCAPED_UNICODE), self::LIFETIME);
+        self::$pulled = null;
+    }
+
+    public static function success(string $message): void { self::add('success', $message); }
+    public static function error(string $message): void { self::add('error', $message); }
+    public static function warning(string $message): void { self::add('warning', $message); }
+    public static function info(string $message): void { self::add('info', $message); }
+
+    /** @return array<int, array{type:string, message:string}> */
+    private static function peek(): array {
+        $raw = Cookies::get_security(self::COOKIE);
+        if ($raw === false) return [];
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) return [];
+        return array_values(array_filter($decoded, fn($m) => is_array($m) && isset($m['type'], $m['message'])));
+    }
+
+    /**
+     * Returns the pending messages and removes the cookie so they are shown only once.
+     * @return array<int, array{type:string, message:string}>
+     */
+    public static function pull(): array {
+        if (self::$pulled !== null) return self::$pulled;
+        $messages = self::peek();
+        if (Cookies::exists(self::COOKIE)) {
+            Cookies::delete(self::COOKIE);
+        }
+        self::$pulled = $messages;
+        return $messages;
+    }
+
+    public static function has(): bool {
+        return self::pull() !== [];
+    }
+
+    /**
+     * HTML for the pending messages: <div class="flash flash-success">…</div>, escaped.
+     */
+    public static function render(): string {
+        $html = '';
+        foreach (self::pull() as $message) {
+            $type = preg_replace('/[^a-z]/', '', strtolower($message['type'])) ?: 'info';
+            $html .= '<div class="flash flash-' . $type . '" role="alert">' . htmlspecialchars($message['message'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</div>';
+        }
+        return $html;
+    }
+
+    /** Test helper. */
+    public static function reset(): void {
+        self::$pulled = null;
+    }
 }
 
 class Database {
@@ -3628,13 +4266,25 @@ class Database {
 
     public static function registerConfig(ConfigProvider $configProvider): void {
         $configProvider->register([
-                'DB_HOST', 
-                'DB_NAME', 
-                'DB_USER', 
+                'DB_NAME',
+                new ConfigType('DB_DRIVER', false, false, ConfigBasicValidator::enum("mysql", "sqlite")),
+                new ConfigType('DB_HOST', false),
+                new ConfigType('DB_USER', false),
                 new ConfigType('DB_PASS', false, true),
             ],
             function(array $cfg) {
                 $db = Container::getInstance()->get(Database::class);
+                $driver = strtolower($cfg['DB_DRIVER'] ?? 'mysql');
+
+                if ($driver === 'sqlite') {
+                    $db->connectSqlite($cfg['DB_NAME']);
+                    return;
+                }
+
+                if (!isset($cfg['DB_HOST']) || !isset($cfg['DB_USER'])) {
+                    throw new Exception("DB_HOST and DB_USER are required for the mysql driver.");
+                }
+
                 $db->connect(
                     $cfg['DB_HOST'],
                     $cfg['DB_NAME'],
@@ -3647,13 +4297,41 @@ class Database {
 
     public function connect(string $host, string $database, string $username, string $password) {
         DebugTimer::start("database.connect");
-        $this->connection = new PDO("mysql:host=".$host.";dbname=".$database, $username, $password, [
+        $this->connection = new PDO("mysql:host=".$host.";dbname=".$database.";charset=utf8mb4", $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
         ]);
-        $this->connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         DebugTimer::stop("database.connect");
+    }
+
+    /**
+     * Opens a SQLite database. $path is a file path (relative paths are resolved against ROOT) or ":memory:".
+     */
+    public function connectSqlite(string $path): void {
+        DebugTimer::start("database.connect");
+        if ($path !== ':memory:' && !preg_match('#^([a-zA-Z]:)?[\\\\/]#', $path)) {
+            $path = ROOT . '/' . ltrim($path, '/');
+        }
+        $pdo = new PDO("sqlite:" . $path, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec("PRAGMA foreign_keys = ON");
+        $this->connection = $pdo;
+        DebugTimer::stop("database.connect");
+    }
+
+    /**
+     * Uses an already opened PDO connection (tests, custom drivers).
+     */
+    public function connectPdo(PDO $pdo): void {
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $this->connection = $pdo;
+    }
+
+    public function isConnected(): bool {
+        return $this->connection !== null;
     }
 
     public function getConnection(): PDO {
@@ -3661,6 +4339,13 @@ class Database {
             throw new Exception("Connection was not opened");
 
         return $this->connection;
+    }
+    /**
+     * Name of the PDO driver in use ("mysql", "sqlite", ...); "mysql" when nothing is connected.
+     */
+    public function driver(): string {
+        if ($this->connection === null) return 'mysql';
+        return strtolower((string)$this->connection->getAttribute(PDO::ATTR_DRIVER_NAME));
     }
 
     public static function getPdoParamType(mixed $value): int {
@@ -3685,7 +4370,10 @@ enum ModelState: string {
 
 class ModelDefinition {
     public string $tableName;
+    /** Column name of the primary key */
     public string $primaryKey;
+    /** Property name of the primary key (differs from the column when #[Column('...')] renames it) */
+    public string $primaryKeyProperty;
     public bool $primaryKeyAutoIncrement = true;
 }
 
@@ -3743,176 +4431,74 @@ enum RelationType: string
 #[Attribute(Attribute::TARGET_METHOD)]
 final class Relation
 {
+    /**
+     * @param bool $cascade For HasMany / HasOneInverse: delete the related rows when this model is deleted.
+     */
     public function __construct(
         public RelationType $type,
         public string $class,
         public ?string $foreignKey = null,
+        public bool $cascade = false,
     ) {}
 }
 
-abstract class Model {
-    private string $table;
-    private string $primaryKey;
-    private bool $primaryKeyAutoIncrement = true;
-    
-    protected static $definitions = [];
+/**
+ * Reflection-derived description of a model class, computed once per class and cached.
+ */
+final class ModelMetadata {
+    /** @var array<string, ModelMetadata> */
+    private static array $cache = [];
 
-    protected $mappings = [];
-    protected $mappingsBack = [];
-    protected $columnsDefinition = [];    
+    public string $class;
+    public string $shortName;
+    public string $table;
+    public ?string $primaryKeyProperty = null;
+    public ?string $primaryKeyColumn = null;
+    public bool $primaryKeyAutoIncrement = true;
+    /** @var array<string,string> property => column */
+    public array $mappings = [];
+    /** @var array<string,string> column => property */
+    public array $mappingsBack = [];
+    /** @var array<string,array{length: ?int}> column => definition */
+    public array $columnsDefinition = [];
+    /** @var array<string,mixed> property => default value */
+    public array $defaults = [];
+    /** @var array<string,?string> property => backed enum class (or null) */
+    public array $enumTypes = [];
+    /** @var array<string,array{type: RelationType, class: class-string<Model>, foreignKey: ?string, method: string}> */
+    public array $relations = [];
+    public bool $hasOnCreated = false;
 
-    protected Database $database;
-    protected $attributes = [];
-    protected ModelState $state = ModelState::New;
-
-    public function __construct(array $data = []) {
-        $this->database = Container::getInstance()->get(Database::class);
-        $this->loadDefaults();
-        $this->populate($data);
+    private function __construct(string $class) {
+        $this->class = $class;
     }
 
-    protected static function getTableDefinition(): ModelDefinition {
-        $class = static::class;
-        if(isset(Model::$definitions[$class])) 
-            return Model::$definitions[$class];
-
-        $object = new $class();
-        
-        $def = new ModelDefinition();
-        $def->tableName = $object->table;
-        $def->primaryKey = $object->primaryKey;
-        $def->primaryKeyAutoIncrement = $object->primaryKeyAutoIncrement;
-
-        Model::$definitions[$class] = $def;
-        return $def;
-    }
-
-    private static function getConnection(): PDO {
-        return Container::getInstance()->get(Database::class)->getConnection();
-    }
-
-    private function populate(array $data) {
-        $this->getColumnMappings();
-
-        if(!empty($data)) 
-            $this->state = ModelState::Loaded;        
-        else if (method_exists($this, 'onCreated'))
-            $this->onCreated();
-
-        $reflector = new ReflectionClass($this);
-        
-        foreach ($data as $column => $value) {
-            $propertyName = array_search($column, $this->mappings, true);
-            if ($propertyName !== false) {
-                $property = $reflector->getProperty($propertyName);
-                $type = $property->getType();
-
-                if ($type instanceof ReflectionNamedType && !$type->isBuiltin()) {
-                    $typeName = $type->getName();
-
-                    if (enum_exists($typeName)) {
-                        $refEnum = new ReflectionEnum($typeName);
-                        if ($refEnum->isBacked()) {
-                            $enumValue = $typeName::tryFrom($value);
-                            if ($enumValue !== null) {
-                                $this->$propertyName = $enumValue;
-                            } else {
-                                throw new \UnexpectedValueException("Invalid value '$value' for enum $typeName");
-                            }
-                            continue;
-                        }
-                    }
-                }
-
-                $this->$propertyName = $value;
-            }
+    /**
+     * @param class-string<Model> $class
+     */
+    public static function for(string $class): self {
+        if (isset(self::$cache[$class])) {
+            return self::$cache[$class];
         }
-    }
 
-    public function isNew(): bool {
-        return $this->state == ModelState::New;
-    }
-
-    private function loadDefaults() {
-        $reflector = new ReflectionClass($this);
-        $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
-
-        foreach ($properties as $property) {
-            $propertyName = $property->getName();
-            $type = $property->getType();
-            $defaultValue = null;
-
-            $columnAttributes = $property->getAttributes(Column::class);
-            $column = !empty($columnAttributes) ? $columnAttributes[0]->newInstance() : null;
-
-            if ($column !== null && $column->defaultValue !== null) {
-                if (!$type instanceof ReflectionNamedType || $type->getName() !== 'string') {
-                    throw new Exception("Default can be set only for string date types");
-                }
-
-                $defaultValue = $column->defaultValue;
-            } else {
-                if ($type instanceof ReflectionNamedType) {
-                    $typeName = $type->getName();
-
-                    if ($type->allowsNull()) {
-                        $defaultValue = null;
-                    } else if (!$type->isBuiltin() && class_exists($typeName)) {
-                        $refClass = new ReflectionClass($typeName);
-                        if ($refClass->isEnum()) {
-                            $enumCases = $typeName::cases();
-                            if (count($enumCases) > 0) {
-                                $defaultValue = $enumCases[0];
-                            } else {
-                                throw new Exception("Enum $typeName has no defined values");
-                            }
-                        } else {
-                            throw new Exception("Class $typeName is not an enum");
-                        }
-                    } else {
-                        switch ($type->getName()) {
-                            case 'int':
-                                $defaultValue = 0;
-                                break;
-                            case 'float':
-                                $defaultValue = 0.0;
-                                break;
-                            case 'string':
-                                $defaultValue = "";
-                                break;
-                            case 'bool':
-                                $defaultValue = false;
-                                break;
-                        }
-                    }
-                }
-            }
-
-            $this->$propertyName = $defaultValue;
-        }
-    }
-
-    private function getColumnMappings() {
-        $reflector = new ReflectionClass($this);
+        $reflector = new ReflectionClass($class);
+        $meta = new self($class);
+        $meta->shortName = $reflector->getShortName();
 
         $tableAttributes = $reflector->getAttributes(Table::class);
-        if (!empty($tableAttributes)) {
-            $this->table = $tableAttributes[0]->newInstance()->name;
+        if (empty($tableAttributes)) {
+            throw new Exception("Table name is not set for model {$class} (missing #[Table('...')] attribute)");
         }
+        $meta->table = $tableAttributes[0]->newInstance()->name;
+        $meta->hasOnCreated = $reflector->hasMethod('onCreated');
 
-        if ($this->table == null) {
-            throw new Exception("Table name is not set for model " . get_class($this));
-        }
+        foreach ($reflector->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) continue;
 
-        $properties = $reflector->getProperties(ReflectionProperty::IS_PUBLIC);
-        $this->mappings = [];
-        $this->mappingsBack = [];
-        $this->columnsDefinition = [];
-
-        foreach ($properties as $property) {
             $propName = $property->getName();
             $column = $propName;
             $length = null;
+            $columnAttr = null;
 
             $columnAttributes = $property->getAttributes(Column::class);
             if (!empty($columnAttributes)) {
@@ -3923,20 +4509,227 @@ abstract class Model {
 
             $primaryKeyAttributes = $property->getAttributes(PrimaryKey::class);
             if (!empty($primaryKeyAttributes)) {
-                $this->primaryKey = $column;
-
-                $primaryKey = $primaryKeyAttributes[0]->newInstance();
-                if (!$primaryKey->autoIncrement) {
-                    $this->primaryKeyAutoIncrement = false;
-                }
+                $meta->primaryKeyProperty = $propName;
+                $meta->primaryKeyColumn = $column;
+                $meta->primaryKeyAutoIncrement = $primaryKeyAttributes[0]->newInstance()->autoIncrement;
             }
 
-            $this->mappings[$propName] = $column;
-            $this->mappingsBack[$column] = $propName;
-            $this->columnsDefinition[$column] = [
-                "length" => $length
+            $meta->mappings[$propName] = $column;
+            $meta->mappingsBack[$column] = $propName;
+            $meta->columnsDefinition[$column] = ["length" => $length];
+            $meta->enumTypes[$propName] = null;
+            $meta->defaults[$propName] = self::defaultFor($property, $columnAttr, $meta->enumTypes[$propName]);
+        }
+
+        // Register before resolving relations so that mutually related models (User <-> Article) do not recurse forever.
+        self::$cache[$class] = $meta;
+
+        foreach ($reflector->getMethods(ReflectionMethod::IS_PRIVATE | ReflectionMethod::IS_PROTECTED | ReflectionMethod::IS_PUBLIC) as $method) {
+            $attributes = $method->getAttributes(Relation::class);
+            if (empty($attributes)) continue;
+
+            $relation = $attributes[0]->newInstance();
+            $key = lcfirst(preg_replace('/^get/', '', $method->getName()));
+            $meta->relations[$key] = [
+                'type' => $relation->type,
+                'class' => $relation->class,
+                'foreignKey' => $relation->foreignKey,
+                'cascade' => $relation->cascade,
+                'method' => $method->getName(),
             ];
         }
+
+        return $meta;
+    }
+
+    private static function defaultFor(ReflectionProperty $property, ?Column $column, ?string &$enumType): mixed {
+        $type = $property->getType();
+
+        if ($column !== null && $column->defaultValue !== null) {
+            if (!$type instanceof ReflectionNamedType || $type->getName() !== 'string') {
+                throw new Exception("Default can be set only for string data types ({$property->getDeclaringClass()->getName()}::\${$property->getName()})");
+            }
+            return $column->defaultValue;
+        }
+
+        if (!$type instanceof ReflectionNamedType) {
+            return null;
+        }
+
+        $typeName = $type->getName();
+
+        if (!$type->isBuiltin() && enum_exists($typeName)) {
+            $refEnum = new ReflectionEnum($typeName);
+            if ($refEnum->isBacked()) {
+                $enumType = $typeName;
+            }
+            if ($type->allowsNull()) {
+                return null;
+            }
+            $cases = $typeName::cases();
+            if (count($cases) === 0) {
+                throw new Exception("Enum $typeName has no defined values");
+            }
+            return $cases[0];
+        }
+
+        if ($type->allowsNull()) {
+            return null;
+        }
+
+        if (!$type->isBuiltin()) {
+            throw new Exception("Class $typeName is not an enum, model properties must be scalars or backed enums");
+        }
+
+        return match ($typeName) {
+            'int' => 0,
+            'float' => 0.0,
+            'string' => "",
+            'bool' => false,
+            default => null,
+        };
+    }
+
+    /**
+     * Resolves a relation into concrete column names.
+     *
+     * HasOne / BelongsTo: the foreign key column lives on THIS table (localColumn) and points at the
+     * related model's primary key (referencedColumn).
+     * HasMany / HasOneInverse: the foreign key column lives on the TARGET table (targetColumn) and
+     * points back at this model's primary key.
+     *
+     * @return array{type: RelationType, class: class-string<Model>, localColumn: ?string, targetColumn: ?string, referencedColumn: string}
+     */
+    public function resolveRelation(string $key): array {
+        if (!isset($this->relations[$key])) {
+            throw new Exception("Relationship $key not defined in {$this->class}");
+        }
+        $relation = $this->relations[$key];
+        $target = self::for($relation['class']);
+
+        switch ($relation['type']) {
+            case RelationType::HasOne:
+            case RelationType::BelongsTo:
+                return [
+                    'type' => $relation['type'],
+                    'class' => $relation['class'],
+                    'localColumn' => $relation['foreignKey'] ?? strtolower($target->shortName) . '_id',
+                    'targetColumn' => null,
+                    'referencedColumn' => $target->primaryKeyColumn ?? 'id',
+                ];
+            case RelationType::HasMany:
+            case RelationType::HasOneInverse:
+                return [
+                    'type' => $relation['type'],
+                    'class' => $relation['class'],
+                    'localColumn' => null,
+                    'targetColumn' => $relation['foreignKey'] ?? strtolower($this->shortName) . '_id',
+                    'referencedColumn' => $this->primaryKeyColumn ?? 'id',
+                ];
+        }
+
+        throw new Exception("Unknown relation type");
+    }
+
+    /** Test helper / hot-reload helper. */
+    public static function flush(): void {
+        self::$cache = [];
+    }
+}
+
+abstract class Model {
+    private ModelMetadata $meta;
+
+    /** @var array<string,string> property => column (kept for backward compatibility with subclasses) */
+    protected $mappings = [];
+    /** @var array<string,string> column => property */
+    protected $mappingsBack = [];
+    protected $columnsDefinition = [];
+
+    protected Database $database;
+    protected $attributes = [];
+    protected ModelState $state = ModelState::New;
+
+    private array $relationCache = [];
+
+    public function __construct(array $data = []) {
+        $this->database = Container::getInstance()->get(Database::class);
+        $this->meta = ModelMetadata::for(static::class);
+        $this->mappings = $this->meta->mappings;
+        $this->mappingsBack = $this->meta->mappingsBack;
+        $this->columnsDefinition = $this->meta->columnsDefinition;
+
+        $this->loadDefaults();
+        $this->populate($data);
+    }
+
+    /**
+     * Cached reflection data for this model class.
+     */
+    public static function metadata(): ModelMetadata {
+        return ModelMetadata::for(static::class);
+    }
+
+    protected static function getTableDefinition(): ModelDefinition {
+        $meta = ModelMetadata::for(static::class);
+
+        $def = new ModelDefinition();
+        $def->tableName = $meta->table;
+        $def->primaryKey = $meta->primaryKeyColumn ?? 'id';
+        $def->primaryKeyProperty = $meta->primaryKeyProperty ?? 'id';
+        $def->primaryKeyAutoIncrement = $meta->primaryKeyAutoIncrement;
+        return $def;
+    }
+
+    private static function getConnection(): PDO {
+        return Container::getInstance()->get(Database::class)->getConnection();
+    }
+
+    private function populate(array $data) {
+        if(!empty($data))
+            $this->state = ModelState::Loaded;
+        else if ($this->meta->hasOnCreated)
+            $this->onCreated();
+
+        foreach ($data as $column => $value) {
+            $propertyName = $this->meta->mappingsBack[$column] ?? null;
+            if ($propertyName === null) continue;
+
+            $enumType = $this->meta->enumTypes[$propertyName];
+            if ($enumType !== null) {
+                if ($value === null) {
+                    $this->$propertyName = null;
+                    continue;
+                }
+                $enumValue = $enumType::tryFrom($value);
+                if ($enumValue === null) {
+                    throw new \UnexpectedValueException("Invalid value '$value' for enum $enumType");
+                }
+                $this->$propertyName = $enumValue;
+                continue;
+            }
+
+            $this->$propertyName = $value;
+        }
+    }
+
+    public function isNew(): bool {
+        return $this->state == ModelState::New;
+    }
+
+    private function loadDefaults() {
+        foreach ($this->meta->defaults as $propertyName => $defaultValue) {
+            $this->$propertyName = $defaultValue;
+        }
+    }
+
+    /**
+     * Value of the primary key of this instance (null for unsaved auto-increment models).
+     */
+    public function getPrimaryKeyValue(): mixed {
+        $property = $this->meta->primaryKeyProperty;
+        if ($property === null) return null;
+        return $this->$property;
     }
 
     public static function findById(int|string $id): ?static {
@@ -3950,7 +4743,7 @@ abstract class Model {
     public static function fetchAll(): ?array {
         $definition = self::getTableDefinition();
         $db = self::getConnection();
-        $stmt = $db->prepare("SELECT * FROM ".$definition->tableName);  
+        $stmt = $db->prepare("SELECT * FROM `".$definition->tableName."`");
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -3977,10 +4770,11 @@ abstract class Model {
     }
 
     public static function toList(int $limit = 20, ?string $orderBy = null, ?int $page = null, array $options = [], ?QueryBuilder $query = null): ModelListResult {
-        if($query == null) $query = self::toQuery();        
+        if($query == null) $query = self::toQuery();
 
         if($page != null) $options["currentPage"] = $page;
-        $paginator = new \Paginator($query->count(), $limit, \Router::url(true), $options);
+        // Keep the current query string (search, filters) in the page links; Paginator replaces only its own page parameter.
+        $paginator = new \Paginator($query->count(), $limit, \Router::url(true, true), $options);
         if($orderBy) $query = $query->order($orderBy);
 
         $result = $query->limit($limit)->page($paginator->getCurrentPage());
@@ -3994,18 +4788,49 @@ abstract class Model {
     /**
      * Delete the row in table by id
      */
-    public function delete(): string {
+    public function delete(): bool {
         $db = $this->database->getConnection();
-        $primaryKey = $this->primaryKey;
+        $primaryKeyProperty = $this->meta->primaryKeyProperty;
+        $primaryKeyColumn = $this->meta->primaryKeyColumn;
 
-        if($primaryKey == null || $this->state === ModelState::New) {
+        if($primaryKeyProperty === null || $this->state === ModelState::New) {
             throw new Exception("Primary key is not set for model ".get_class($this).", or the model was not saved so we can't delete the model");
         }
 
-        //TODO: delete all childs
-        $stmt = $db->prepare("DELETE FROM " . $this->table . " WHERE $primaryKey = ?");
-        $stmt->execute([$this->$primaryKey]);
-        return $stmt->rowCount() > 0;
+        $ownsTransaction = !$db->inTransaction();
+        if ($ownsTransaction) $db->beginTransaction();
+        try {
+            // Children of relations declared with cascade: true go first (each child cascades further itself).
+            foreach ($this->meta->relations as $key => $info) {
+                if (!$info['cascade']) continue;
+                $relation = $this->meta->resolveRelation($key);
+                if ($relation['targetColumn'] === null) continue;
+                $children = $relation['class']::where([$relation['targetColumn'] => $this->$primaryKeyProperty])->fetchAll();
+                foreach ($children as $child) {
+                    $child->delete();
+                }
+            }
+
+            $stmt = $db->prepare("DELETE FROM `" . $this->meta->table . "` WHERE `$primaryKeyColumn` = ?");
+            $stmt->execute([$this->$primaryKeyProperty]);
+            $deleted = $stmt->rowCount() > 0;
+
+            if ($ownsTransaction) $db->commit();
+        } catch (Throwable $e) {
+            if ($ownsTransaction && $db->inTransaction()) $db->rollBack();
+            throw $e;
+        }
+
+        $this->relationCache = [];
+        return $deleted;
+    }
+
+    /**
+     * Stores an already loaded related object so that the relation getter does not query again
+     * (used by QueryBuilder::with() for eager loading; also handy in tests).
+     */
+    public function setLoadedRelation(string $relationName, mixed $value): void {
+        $this->relationCache[$relationName] = $value;
     }
 
     /**
@@ -4013,65 +4838,70 @@ abstract class Model {
      */
     public function save(): bool {
         $db = $this->database->getConnection();
-        $columns = array_map(fn($key) => $this->mappings[$key], array_keys($this->attributes));
-        $primaryKey = $this->primaryKey;
+        $primaryKeyProperty = $this->meta->primaryKeyProperty;
+        $primaryKeyColumn = $this->meta->primaryKeyColumn;
 
-        if($primaryKey == null) {
+        if($primaryKeyProperty === null) {
             throw new Exception("Primary key is not set for model ".get_class($this)." so we can't save the model");
         }
 
+        $isInsert = $this->$primaryKeyProperty === null || $this->state === ModelState::New;
+
         $columns = [];
         $values = [];
-        foreach ($this->mappings as $property => $column) {
-            if ($property !== $primaryKey) {
-                $columns[] = $column;
-                $value = $this->$property;
-                
-                if (is_object($value) && $value instanceof \UnitEnum) {
-                    if ($value instanceof \BackedEnum) {
-                        $value = $value->value;
-                    } else {
-                        throw new Exception("Enum {$column} has no value (not a backed enum)");
-                    }
-                }
-                
-                // Převod boolean hodnot na integer pro MySQL
-                if (is_bool($value)) {
-                    $value = (int)$value; // false -> 0, true -> 1
-                }
-                
-                if (is_string($value) && isset($this->columnsDefinition[$column]['length'])) {
-                    $maxLength = $this->columnsDefinition[$column]['length'];
-                    if ($maxLength !== null && mb_strlen($value) > $maxLength) {
-                        $value = mb_substr($value, 0, $maxLength);
-                    }
-                }
-
-                $values[] = $value;
+        foreach ($this->meta->mappings as $property => $column) {
+            // The auto-increment primary key is generated by the database; a manual primary key is inserted like any column.
+            if ($property === $primaryKeyProperty && ($this->meta->primaryKeyAutoIncrement || !$isInsert)) {
+                continue;
             }
+
+            $columns[] = $column;
+            $value = $this->$property;
+
+            if (is_object($value) && $value instanceof \UnitEnum) {
+                if ($value instanceof \BackedEnum) {
+                    $value = $value->value;
+                } else {
+                    throw new Exception("Enum {$column} has no value (not a backed enum)");
+                }
+            }
+
+            // MySQL/SQLite have no real boolean type; store booleans as 0/1.
+            if (is_bool($value)) {
+                $value = (int)$value;
+            }
+
+            if (is_string($value) && isset($this->meta->columnsDefinition[$column]['length'])) {
+                $maxLength = $this->meta->columnsDefinition[$column]['length'];
+                if ($maxLength !== null && mb_strlen($value) > $maxLength) {
+                    $value = mb_substr($value, 0, $maxLength);
+                }
+            }
+
+            $values[] = $value;
         }
-        
-        if ($this->$primaryKey === null || $this->state === ModelState::New) {
-            // INSERT
+
+        $quotedColumns = array_map(fn($c) => "`$c`", $columns);
+
+        if ($isInsert) {
             $placeholders = array_fill(0, count($columns), '?');
-            $stmt = $db->prepare("INSERT INTO `" . $this->table . "` (" . implode(", ", $columns) . ") VALUES (" . implode(", ", $placeholders) . ")");
+            $stmt = $db->prepare("INSERT INTO `" . $this->meta->table . "` (" . implode(", ", $quotedColumns) . ") VALUES (" . implode(", ", $placeholders) . ")");
 
             if ($stmt->execute($values)) {
-                if ($this->primaryKeyAutoIncrement) {
-                    $this->$primaryKey = $db->lastInsertId();
+                if ($this->meta->primaryKeyAutoIncrement) {
+                    $this->$primaryKeyProperty = (int)$db->lastInsertId();
                 }
 
                 $this->state = ModelState::Changed;
                 return true;
             }
         } else {
-            // UPDATE
             $setColumns = [];
-            foreach ($columns as $column) {
+            foreach ($quotedColumns as $column) {
                 $setColumns[] = "$column = ?";
             }
-            $stmt = $db->prepare("UPDATE `" . $this->table . "` SET " . implode(", ", $setColumns) . " WHERE $primaryKey = ?");
-            $values[] = $this->$primaryKey;
+            $stmt = $db->prepare("UPDATE `" . $this->meta->table . "` SET " . implode(", ", $setColumns) . " WHERE `$primaryKeyColumn` = ?");
+            $values[] = $this->$primaryKeyProperty;
 
             $this->state = ModelState::Changed;
             return $stmt->execute($values);
@@ -4080,88 +4910,34 @@ abstract class Model {
         return false;
     }
 
-    private $relationCache = [];
-
-    private function getRelationships(): array {
-        $reflector = new ReflectionClass($this);
-        $methods = $reflector->getMethods(ReflectionMethod::IS_PRIVATE | ReflectionMethod::IS_PUBLIC);
-        $relationships = [];
-
-        foreach ($methods as $method) {
-            $attributes = $method->getAttributes(Relation::class);
-            if (empty($attributes)) continue;
-
-            $relation = $attributes[0]->newInstance();
-            $methodName = $method->getName();
-            $relationKey = lcfirst(preg_replace('/^get/', '', $methodName));
-
-            $thisShortName = $reflector->getShortName();
-            $targetShortName = (new ReflectionClass($relation->class))->getShortName();
-
-            $foreignKey = $relation->foreignKey ?? match ($relation->type) {
-                // foreign key is on the TARGET table, pointing back to this model
-                RelationType::HasMany, RelationType::HasOneInverse
-                    => strtolower($thisShortName) . '_id',
-
-                // foreign key is on THIS table, pointing to the related model's id
-                RelationType::BelongsTo
-                    => 'id',
-
-                // foreign key is on THIS table, pointing to the related model
-                RelationType::HasOne
-                    => strtolower($targetShortName) . '_id',
-            };
-
-            $relationships[$relationKey] = [
-                'type' => $relation->type->value,
-                'class' => $relation->class,
-                'foreignKey' => $foreignKey,
-            ];
-        }
-
-        return $relationships;
-    }
-
     protected function loadRelationship(string $method) {
-        if (isset($this->relationCache[$method])) {
+        if (array_key_exists($method, $this->relationCache)) {
             return $this->relationCache[$method];
         }
 
-        $relationships = $this->getRelationships();
-        if (!isset($relationships[$method])) {
-            throw new Exception("Relationship $method not defined");
-        }
-
-        $relation = $relationships[$method];
+        $relation = $this->meta->resolveRelation($method);
+        $className = $relation['class'];
         $result = null;
 
-        if ($relation['type'] === 'hasMany') {
-            $foreignKey = isset($this->mappings[$relation['foreignKey']]) ? $this->mappings[$relation['foreignKey']] : $relation['foreignKey'];
-            $className = $relation['class'];
+        switch ($relation['type']) {
+            case RelationType::HasMany:
+                // Returns a QueryBuilder so the caller can keep filtering/ordering/paginating.
+                return $className::where([$relation['targetColumn'] => $this->getPrimaryKeyValue()]);
 
-            $result = (new $className)
-                ->where([$foreignKey => $this->{$this->primaryKey}]);
-            return $result; // Return QueryBuilder for hasMany relation, because it can be used for further chaining
-        } else if ($relation['type'] === 'hasOne') {
-            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']]) ? $this->mappingsBack[$relation['foreignKey']] : $relation['foreignKey'];
-            if (!isset($this->{$foreignKey})) {
-                throw new Exception("Foreign key $foreignKey is not set in " . get_class($this) . " for relation $method");
-            }
-            $foreignValue = $this->{$foreignKey};
-            $className = $relation['class'];
+            case RelationType::HasOneInverse:
+                $result = $className::where([$relation['targetColumn'] => $this->getPrimaryKeyValue()])->fetch();
+                break;
 
-            $result = $foreignValue ? ($className)::findById($foreignValue) : null;
-        } else if ($relation['type'] === 'hasOneInverse') {
-            $foreignKey = isset($this->mappings[$relation['foreignKey']]) ? $this->mappings[$relation['foreignKey']] : $relation['foreignKey'];
-            $className = $relation['class'];
-
-            $result = ($className)::where([$foreignKey => $this->{$this->primaryKey}])->fetch();
-        } else if ($relation['type'] === 'belongsTo') {
-            $foreignKey = isset($this->mappingsBack[$relation['foreignKey']]) ? $this->mappingsBack[$relation['foreignKey']] : $relation['foreignKey'];
-            $foreignValue = $this->{$foreignKey};
-            $className = $relation['class'];
-
-            $result = $foreignValue ? ($className)::where(["id" => $foreignValue])->fetch() : null;
+            case RelationType::HasOne:
+            case RelationType::BelongsTo:
+                $localColumn = $relation['localColumn'];
+                $property = $this->meta->mappingsBack[$localColumn] ?? null;
+                if ($property === null) {
+                    throw new Exception("Foreign key column '$localColumn' is not defined in " . get_class($this) . " for relation $method");
+                }
+                $foreignValue = $this->$property;
+                $result = $foreignValue ? $className::where([$relation['referencedColumn'] => $foreignValue])->fetch() : null;
+                break;
         }
 
         $this->relationCache[$method] = $result;
@@ -4170,7 +4946,7 @@ abstract class Model {
 
     /**
      * Get relation by method name - can be called internally by the class itself
-     * 
+     *
      * @param string $relationName Name of the relation method
      * @return mixed The relation result (QueryBuilder for hasMany, Model instance or null for belongsTo/hasOne)
      */
@@ -4179,47 +4955,44 @@ abstract class Model {
     }
 
     public function __call(string $method, array $args) {
-        $relationships = $this->getRelationships();
-    
-        if (isset($relationships[$method])) {
+        if (isset($this->meta->relations[$method])) {
             return $this->loadRelationship($method);
         }
-    
+
         throw new Exception("Method $method not found in " . get_class($this));
     }
 
     /**
-     * Generates an SQL CREATE TABLE statement based on the model's annotations and properties.
+     * Generates an SQL CREATE TABLE statement based on the model's attributes and properties.
      *
      * @param string $modelClass Fully qualified class name of the model.
-     * @param string $defaultCharset Default charset for the table (default: utf8)
-     * @param string $defaultCollation Default collation for text-based columns (default: utf8_bin)
-     * @return string The generated SQL statement.
-     * @throws Exception If the table name annotation is not found.
+     * @param string $defaultCharset Default charset for the table (MySQL only, default: utf8)
+     * @param string $defaultCollation Default collation for text-based columns (MySQL only, default: utf8_bin)
+     * @param string|null $dialect "mysql" or "sqlite"; defaults to the driver of the active connection (mysql when not connected).
+     * @return string The generated SQL statement(s).
+     * @throws Exception If the table attribute is not found.
      */
-    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin"): string {
-        $reflection = new ReflectionClass($modelClass);
+    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin", ?string $dialect = null): string {
+        $dialect = strtolower($dialect ?? Container::getInstance()->get(Database::class)->driver());
+        $sqlite = $dialect === 'sqlite';
 
-        $tableAttributes = $reflection->getAttributes(Table::class);
-        if (empty($tableAttributes)) {
-            throw new Exception("Table attribute (#[Table(...)]) not found in class {$modelClass}");
-        }
-        $tableName = $tableAttributes[0]->newInstance()->name;
+        $meta = ModelMetadata::for($modelClass);
+        $reflection = new ReflectionClass($modelClass);
+        $tableName = $meta->table;
 
         $columns = [];
         $definedColumns = [];
 
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
-            $columnName = $property->getName();
-            $length = null;
+            if ($property->isStatic()) continue;
+
+            $columnName = $meta->mappings[$property->getName()];
+            $length = $meta->columnsDefinition[$columnName]['length'];
             $defaultValue = null;
 
             $columnAttributes = $property->getAttributes(Column::class);
             if (!empty($columnAttributes)) {
-                $columnAttr = $columnAttributes[0]->newInstance();
-                $columnName = $columnAttr->name ?? $columnName;
-                $length = $columnAttr->length;
-                $defaultValue = $columnAttr->defaultValue;
+                $defaultValue = $columnAttributes[0]->newInstance()->defaultValue;
             }
 
             $type = $property->getType();
@@ -4237,30 +5010,33 @@ abstract class Model {
                 }
             }
 
+            $primaryKey = $property->getName() === $meta->primaryKeyProperty;
+            $autoIncrement = $primaryKey && $typeName === 'int' && $meta->primaryKeyAutoIncrement;
+
             $charset = "";
             if ($typeName === 'string') {
                 $sqlType = $length ? "varchar({$length})" : "text";
-                $charset = " COLLATE {$defaultCollation}";
+                if (!$sqlite) $charset = " COLLATE {$defaultCollation}";
             } else {
                 switch ($typeName) {
                     case 'int':
-                        $sqlType = $length !== null ? "int({$length})" : "int";
+                        if ($sqlite) {
+                            $sqlType = 'integer';
+                        } else {
+                            $sqlType = $length !== null ? "int({$length})" : "int";
+                        }
                         break;
                     case 'float':
-                        $sqlType = 'float';
+                        $sqlType = $sqlite ? 'real' : 'float';
                         break;
                     case 'bool':
-                        $sqlType = 'boolean';
+                        $sqlType = $sqlite ? 'integer' : 'boolean';
                         break;
                     default:
                         $sqlType = 'text';
-                        $charset = " COLLATE {$defaultCollation}";
+                        if (!$sqlite) $charset = " COLLATE {$defaultCollation}";
                 }
             }
-
-            $primaryKeyAttributes = $property->getAttributes(PrimaryKey::class);
-            $primaryKey = !empty($primaryKeyAttributes);
-            $autoIncrementDisabled = $primaryKey && !$primaryKeyAttributes[0]->newInstance()->autoIncrement;
 
             $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';
 
@@ -4271,17 +5047,20 @@ abstract class Model {
                         $defaultValue = "'" . $defaultValue . "'";
                     }
                 } else if ($typeName === 'bool') {
-                    $defaultValue = (strtolower($defaultValue) === 'true' || $defaultValue === '1') ? 'TRUE' : 'FALSE';
+                    $defaultValue = (strtolower($defaultValue) === 'true' || $defaultValue === '1') ? ($sqlite ? '1' : 'TRUE') : ($sqlite ? '0' : 'FALSE');
                 }
                 $defaultClause = " DEFAULT " . $defaultValue;
             }
 
-            $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability}";
             if ($primaryKey) {
-                $colDefinition .= " PRIMARY KEY";
-                if ($typeName === 'int' && !$autoIncrementDisabled) {
-                    $colDefinition .= " AUTO_INCREMENT";
+                if ($sqlite) {
+                    // SQLite only auto-generates ids for the exact spelling "INTEGER PRIMARY KEY".
+                    $colDefinition = "`{$columnName}` {$sqlType} PRIMARY KEY" . ($autoIncrement ? " AUTOINCREMENT" : "");
+                } else {
+                    $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability} PRIMARY KEY" . ($autoIncrement ? " AUTO_INCREMENT" : "");
                 }
+            } else {
+                $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability}";
             }
             $colDefinition .= $defaultClause;
 
@@ -4290,61 +5069,69 @@ abstract class Model {
         }
 
         $keys = [];
+        $indexes = [];
         $foreignKeys = [];
         $keysAdded = [];
-        $relationTables = [];
 
         // Only HasOne and BelongsTo relations carry a real foreign key column on THIS table,
         // so only those need a FK constraint here (HasMany / HasOneInverse point the other way).
-        $constraintRelationTypes = [RelationType::HasOne, RelationType::BelongsTo];
-
-        foreach ($reflection->getMethods(ReflectionMethod::IS_PRIVATE | ReflectionMethod::IS_PUBLIC) as $method) {
-            $relationAttributes = $method->getAttributes(Relation::class);
-            if (empty($relationAttributes)) {
+        foreach ($meta->relations as $key => $relationInfo) {
+            if (!in_array($relationInfo['type'], [RelationType::HasOne, RelationType::BelongsTo], true)) {
                 continue;
             }
 
-            $relation = $relationAttributes[0]->newInstance();
-            if (!in_array($relation->type, $constraintRelationTypes, true)) {
+            $relation = $meta->resolveRelation($key);
+            $relatedTable = ModelMetadata::for($relation['class'])->table;
+            $localTableKey = $relation['localColumn'];
+            $referencedColumn = $relation['referencedColumn'];
+
+            if (!isset($definedColumns[$localTableKey])) {
                 continue;
             }
 
-            $relatedClass = $relation->class;
-            if (!isset($relationTables[$relatedClass])) {
-                $relatedReflection = new ReflectionClass($relatedClass);
-                $relatedTableAttributes = $relatedReflection->getAttributes(Table::class);
-
-                if (!empty($relatedTableAttributes)) {
-                    $relationTables[$relatedClass] = $relatedTableAttributes[0]->newInstance()->name;
+            if (!isset($keysAdded[$localTableKey])) {
+                $indexName = preg_replace('/_id$/', '', $localTableKey);
+                if ($indexName === "") {
+                    $indexName = $localTableKey;
+                }
+                if ($sqlite) {
+                    $indexes[] = "CREATE INDEX IF NOT EXISTS `{$tableName}_{$indexName}` ON `{$tableName}` (`{$localTableKey}`);";
                 } else {
-                    $relationTables[$relatedClass] = $relatedReflection->getShortName();
-                }
-            }
-            $relatedTable = $relationTables[$relatedClass];
-
-            $referencedColumn = $relation->foreignKey ?? 'id';
-            $methodName = preg_replace('/^get/', '', $method->getName());
-            $localTableKey = strtolower($methodName) . '_id';
-
-            if (isset($definedColumns[$localTableKey])) {
-                if (!isset($keysAdded[$localTableKey])) {
-                    $indexName = preg_replace('/_id$/', '', $localTableKey);
-                    if ($indexName === "") {
-                        $indexName = $localTableKey;
-                    }
                     $keys[] = "KEY `{$indexName}` (`{$localTableKey}`)";
-                    $keysAdded[$localTableKey] = true;
                 }
-                $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$localTableKey}` FOREIGN KEY (`{$localTableKey}`) REFERENCES `" . strtolower($relatedTable) . "` (`{$referencedColumn}`) ON DELETE NO ACTION ON UPDATE NO ACTION";
+                $keysAdded[$localTableKey] = true;
             }
+            $foreignKeys[] = "CONSTRAINT `{$tableName}_ibfk_{$localTableKey}` FOREIGN KEY (`{$localTableKey}`) REFERENCES `{$relatedTable}` (`{$referencedColumn}`) ON DELETE NO ACTION ON UPDATE NO ACTION";
         }
 
         $columnsSql = implode(",\n    ", $columns);
         $constraints = array_merge($keys, $foreignKeys);
         $constraintsSql = !empty($constraints) ? ",\n    " . implode(",\n    ", $constraints) : "";
 
-        $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}{$constraintsSql}\n) ENGINE=InnoDB DEFAULT CHARSET={$defaultCharset} COLLATE={$defaultCollation};";
-        return $sql;
+        if ($sqlite) {
+            $sql = "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}{$constraintsSql}\n);";
+            if (!empty($indexes)) {
+                $sql .= "\n" . implode("\n", $indexes);
+            }
+            return $sql;
+        }
+
+        return "CREATE TABLE IF NOT EXISTS `{$tableName}` (\n    {$columnsSql}{$constraintsSql}\n) ENGINE=InnoDB DEFAULT CHARSET={$defaultCharset} COLLATE={$defaultCollation};";
+    }
+
+    /**
+     * Runs the CREATE TABLE statement(s) of the given model classes on the active connection.
+     * Handy for tests, SQLite setups and first-run installers.
+     *
+     * @param class-string<Model> ...$modelClasses
+     */
+    public static function createTables(string ...$modelClasses): void {
+        $db = self::getConnection();
+        foreach ($modelClasses as $class) {
+            foreach (array_filter(array_map('trim', explode(";\n", self::generateCreateTableQuery($class)))) as $statement) {
+                $db->exec(rtrim($statement, ";"));
+            }
+        }
     }
 }
 
@@ -4417,17 +5204,15 @@ class QueryBuilderWhere {
             foreach ($condition as $key => $val) {
                 $bindName = $this->bindingGenerator->generateBindName();
                 $compare = ($val === null) ? "IS" : "=";
-
-                $last1part = substr($key, -1);
-                if(in_array($last1part, [">", "<"])) {
-                    $compare = $last1part;
-                    $key = trim(substr($key, 0, -1));
-                }
-
+                
                 $last2part = substr($key, -2);
-                if (in_array($last2part, ["<>", "!=", "<=", ">="])) {
+                $last1part = substr($key, -1);
+                if (in_array($last2part, ["<>", "!=", "<=", ">="], true)) {
                     $compare = $last2part;
                     $key = trim(substr($key, 0, -2));
+                } elseif (in_array($last1part, [">", "<"], true)) {
+                    $compare = $last1part;
+                    $key = trim(substr($key, 0, -1));
                 }
 
                 $this->conditions[] = [
@@ -4604,6 +5389,8 @@ class QueryBuilder {
 	private $sql = [];
 	private $debugSql = [];
 	private $takeAllFieldsFromTable = false;
+    /** @var array<string,true> relation names to eager-load */
+    private array $with = [];
     private QueryBuilderBindingGenerator $bindingGenerator;
     private QueryBuilderWhere $whereBuilder;
     private $className;
@@ -4642,7 +5429,7 @@ class QueryBuilder {
      * 
      * @return \QueryBuilder<T>
      */
-    public function where(string|array|callable $condition, array $params = []): self {
+    public function where(string|array|callable $condition, $params = []): self {
         $this->whereBuilder->and($condition, $params);
         return $this;
     }
@@ -4750,13 +5537,14 @@ class QueryBuilder {
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $this->debugCapture($stmt);        
+        $this->debugCapture($stmt);
 
         if ($this->className) {
             $objects = [];
             foreach ($rows as $row) {
                 $objects[] = new $this->className($row);
             }
+            $this->eagerLoad($objects);
             return $objects;
         } else {
             return $rows;
@@ -4764,9 +5552,129 @@ class QueryBuilder {
 	}
 
     /**
-     * @return T|null Returns an instance of the specified class or null if the record does not exist.
+     * Eager-loads relations for the fetched objects to avoid the N+1 query problem:
+     *   Article::toQuery()->with('author')->fetchAll()   // one query for the articles, one for all authors
+     * Supports HasOne, BelongsTo and HasOneInverse relations (HasMany getters return a QueryBuilder by design).
+     *
+     * @return \QueryBuilder<T>
      */
-    public function fetch(): ?Model {
+    public function with(string ...$relations): self {
+        foreach ($relations as $relation) {
+            $this->with[$relation] = true;
+        }
+        return $this;
+    }
+
+    /** @param Model[] $objects */
+    private function eagerLoad(array $objects): void {
+        if (!$this->className || $objects === [] || $this->with === []) return;
+
+        $meta = ModelMetadata::for($this->className);
+        foreach (array_keys($this->with) as $name) {
+            $relation = $meta->resolveRelation($name);
+            $targetClass = $relation['class'];
+            $targetMeta = ModelMetadata::for($targetClass);
+
+            switch ($relation['type']) {
+                case RelationType::HasOne:
+                case RelationType::BelongsTo:
+                    $localProperty = $meta->mappingsBack[$relation['localColumn']] ?? null;
+                    if ($localProperty === null) {
+                        throw new Exception("Foreign key column '{$relation['localColumn']}' is not defined in {$this->className} for relation $name");
+                    }
+                    $keys = [];
+                    foreach ($objects as $object) {
+                        if ($object->$localProperty) $keys[$object->$localProperty] = true;
+                    }
+                    $related = $keys === [] ? [] : $targetClass::toQuery()->in($relation['referencedColumn'], array_keys($keys))->fetchAll();
+                    $referencedProperty = $targetMeta->mappingsBack[$relation['referencedColumn']] ?? $relation['referencedColumn'];
+                    $byKey = [];
+                    foreach ($related as $item) {
+                        $byKey[$item->$referencedProperty] = $item;
+                    }
+                    foreach ($objects as $object) {
+                        $object->setLoadedRelation($name, $byKey[$object->$localProperty] ?? null);
+                    }
+                    break;
+
+                case RelationType::HasOneInverse:
+                    $ids = [];
+                    foreach ($objects as $object) {
+                        $pk = $object->getPrimaryKeyValue();
+                        if ($pk !== null) $ids[$pk] = true;
+                    }
+                    $related = $ids === [] ? [] : $targetClass::toQuery()->in($relation['targetColumn'], array_keys($ids))->fetchAll();
+                    $targetProperty = $targetMeta->mappingsBack[$relation['targetColumn']] ?? $relation['targetColumn'];
+                    $byKey = [];
+                    foreach ($related as $item) {
+                        $byKey[$item->$targetProperty] ??= $item;
+                    }
+                    foreach ($objects as $object) {
+                        $object->setLoadedRelation($name, $byKey[$object->getPrimaryKeyValue()] ?? null);
+                    }
+                    break;
+
+                default:
+                    throw new Exception("with('$name'): eager loading supports HasOne, BelongsTo and HasOneInverse relations; '$name' is {$relation['type']->value}");
+            }
+        }
+    }
+
+    /**
+     * Deletes the rows matching the WHERE conditions and returns how many were removed.
+     * Refuses to run without a condition; use deleteAll() to empty a table on purpose.
+     */
+    public function delete(): int {
+        $whereText = $this->whereBuilder->buildSql();
+        if ($whereText === '') {
+            throw new Exception("QueryBuilder::delete() needs at least one where() condition; call deleteAll() to delete every row");
+        }
+        return $this->executeWrite("DELETE FROM `" . $this->table . "` WHERE " . $whereText, $this->whereBuilder->getAllBindings());
+    }
+
+    public function deleteAll(): int {
+        return $this->executeWrite("DELETE FROM `" . $this->table . "`", []);
+    }
+
+    /**
+     * Bulk UPDATE of the matching rows, e.g. Article::where(['status' => 'draft'])->update(['status' => ArticleStatus::Published]).
+     * Keys are column names; enums are stored by value and booleans as 0/1.
+     */
+    public function update(array $values): int {
+        if ($values === []) return 0;
+        $whereText = $this->whereBuilder->buildSql();
+        if ($whereText === '') {
+            throw new Exception("QueryBuilder::update() needs at least one where() condition");
+        }
+
+        $set = [];
+        $binds = [];
+        $i = 0;
+        foreach ($values as $column => $value) {
+            if ($value instanceof \BackedEnum) $value = $value->value;
+            if (is_bool($value)) $value = (int)$value;
+            $bind = ":set" . (++$i);
+            $set[] = "`$column` = $bind";
+            $binds[$bind] = $value;
+        }
+
+        return $this->executeWrite("UPDATE `" . $this->table . "` SET " . implode(", ", $set) . " WHERE " . $whereText, $binds + $this->whereBuilder->getAllBindings());
+    }
+
+    private function executeWrite(string $sql, array $binds): int {
+        $stmt = $this->connection->prepare($sql);
+        foreach ($binds as $name => $value) {
+            $stmt->bindValue($name, $value, Database::getPdoParamType($value));
+        }
+        $stmt->execute();
+        $this->debugCapture($stmt, "write");
+        return $stmt->rowCount();
+    }
+
+    /**
+     * @return T|null Returns an instance of the specified class (or the raw row when no model class is set) or null if the record does not exist.
+     */
+    public function fetch(): Model|array|null {
         $buildData = $this->buildSql(false);
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
@@ -4777,11 +5685,14 @@ class QueryBuilder {
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
 
         $this->debugCapture($stmt, "querySingle");
-        
+
         if ($this->className) {
-            return $result ? new $this->className($result) : null;
+            if (!$result) return null;
+            $object = new $this->className($result);
+            $this->eagerLoad([$object]);
+            return $object;
         } else {
-            return $result;
+            return $result === false ? null : $result;
         }
     }
 
@@ -4956,7 +5867,7 @@ class QueryBuilder {
     }
 }
 
-if(defined("USE_USERS")) {
+if(USE_USERS) {
     enum UserServiceCheck {
         case Ok;
         case EmailExists;
@@ -4972,16 +5883,122 @@ if(defined("USE_USERS")) {
         case Ok;
         case WrongPassword;
         case WrongLogin;
+        /** Too many failed attempts for this login or IP address; try again later (see LoginThrottle). */
+        case Blocked;
+    }
+    /**
+     * Brute-force protection for UserService::login(): after MAX_ATTEMPTS failed logins for the same
+     * login name or the same IP address within WINDOW seconds, further attempts are rejected until the
+     * window has passed. Failures are stored in the `login_attempts` table (Models\LoginAttempt);
+     * when that model does not exist the throttle is disabled.
+     */
+    class LoginThrottle {
+        /** Failed attempts allowed per login name within the window. */
+        public const MAX_ATTEMPTS = 5;
+        /** Failed attempts allowed per IP address within the window (higher: offices and NAT share one address). */
+        public const MAX_ATTEMPTS_PER_IP = 20;
+        public const WINDOW = 900;
+
+        private ?bool $enabled = null;
+
+        public function __construct(
+            private int $maxAttempts = self::MAX_ATTEMPTS,
+            private int $windowSeconds = self::WINDOW,
+            private int $maxAttemptsPerIp = self::MAX_ATTEMPTS_PER_IP,
+        ) {}
+
+        public function isEnabled(): bool {
+            return $this->enabled ??= class_exists(Models\LoginAttempt::class);
+        }
+
+        /** Test helper / opt-out: LoginThrottle::disable() */
+        public function setEnabled(bool $enabled): void {
+            $this->enabled = $enabled && class_exists(Models\LoginAttempt::class);
+        }
+
+        private function recentFailures(string $login, string $ip): QueryBuilder {
+            return Models\LoginAttempt::where(fn(QueryBuilderWhere $w) => $w->and(['login' => $login])->or(['ip' => $ip]))
+                ->where(['created >' => time() - $this->windowSeconds]);
+        }
+
+        public function isBlocked(string $login, string $ip): bool {
+            if (!$this->isEnabled()) return false;
+            $since = time() - $this->windowSeconds;
+            if (Models\LoginAttempt::where(['login' => $login, 'created >' => $since])->count() >= $this->maxAttempts) {
+                return true;
+            }
+            return Models\LoginAttempt::where(['ip' => $ip, 'created >' => $since])->count() >= $this->maxAttemptsPerIp;
+        }
+
+        /** Seconds until a blocked login/IP may try again (0 when not blocked). */
+        public function retryAfter(string $login, string $ip): int {
+            if (!$this->isBlocked($login, $ip)) return 0;
+            $newest = $this->recentFailures($login, $ip)->order("created DESC")->fetch();
+            return $newest === null ? 0 : max(1, $newest->created + $this->windowSeconds - time());
+        }
+
+        public function recordFailure(string $login, string $ip): void {
+            if (!$this->isEnabled()) return;
+            $attempt = new Models\LoginAttempt();
+            $attempt->login = mb_substr($login, 0, 100);
+            $attempt->ip = mb_substr($ip, 0, 45);
+            $attempt->created = time();
+            $attempt->save();
+
+            // Opportunistic cleanup of attempts outside the window so the table stays small.
+            if (random_int(1, 20) === 1) {
+                Models\LoginAttempt::where(['created <' => time() - $this->windowSeconds])->delete();
+            }
+        }
+
+        public function clear(string $login): void {
+            if (!$this->isEnabled()) return;
+            Models\LoginAttempt::where(['login' => $login])->delete();
+        }
     }
 
-    class UserService {
+class UserService {
         private Router $router;
         private AuthentificatorProvider $authentificatorProvider;
+        private LoginThrottle $throttle;
 
-        public function __construct(Router $router, AuthentificatorProvider $authentificatorProvider) {
+        private ?Models\User $currentUser = null;
+        private bool $currentUserResolved = false;
+        /** Session value the cached user was loaded for; a different cookie value invalidates the cache. */
+        private ?string $currentUserKey = null;
+
+        public function __construct(Router $router, AuthentificatorProvider $authentificatorProvider, LoginThrottle $throttle) {
             $this->authentificatorProvider = $authentificatorProvider;
             $this->router = $router;
+            $this->throttle = $throttle;
         }
+
+        public function getThrottle(): LoginThrottle {
+            return $this->throttle;
+        }
+
+        /**
+         * Permission level of the signed-in user (0 for anonymous visitors or users without a permission row).
+         */
+        public function currentLevel(): int {
+            $user = $this->current();
+            if ($user === null) return 0;
+            $permission = $user->getPermission();
+            return $permission === null ? 0 : (int)$permission->level;
+        }
+
+        public function can(int $level): bool {
+            return $this->currentLevel() >= $level;
+        }
+
+        /** Forget the cached current user (after login/logout or when the user row changed). */
+        public function refreshCurrent(): void {
+            $this->currentUser = null;
+            $this->currentUserResolved = false;
+        }
+
+        /** Minimum accepted password length for register() and the password reset flow. */
+        public const MIN_PASSWORD_LENGTH = 8;
 
         public function check(string $login, string $email): UserServiceCheck {
             if(!Utilities::isEmail($email)) return UserServiceCheck::EmailInvalid;
@@ -4995,6 +6012,10 @@ if(defined("USE_USERS")) {
             return UserServiceCheck::Unknown;
         }
 
+        public function isPasswordAcceptable(string $password): bool {
+            return mb_strlen($password) >= self::MIN_PASSWORD_LENGTH;
+        }
+
         /**
          * Register new user
          * @param string $login
@@ -5005,6 +6026,10 @@ if(defined("USE_USERS")) {
          */
         public function register(string $login, string $password, string $email, ?callable $callback = null): Models\User | UserServiceCheck {
             $state = $this->check($login, $email);
+
+            if($state == UserServiceCheck::Ok && !$this->isPasswordAcceptable($password)) {
+                return UserServiceCheck::PasswordBad;
+            }
 
             if($state == UserServiceCheck::Ok) {
                 $user = new Models\User();
@@ -5030,21 +6055,25 @@ if(defined("USE_USERS")) {
          * @return bool
          */
         public function isAuthentificated(): bool {
-            $auth = $this->authentificatorProvider->get();
-            if(!$auth->isAuthenticated()) return false;
-
-            $userId = $auth->getValue();
-            $user = Models\User::findById($userId);
-            if($user != null) return true;   
-
-            return false;
+            return $this->current() !== null;
         }
 
         public function login(string $login, string $password, ?callable $callback = null): UserServiceLogin | string {
+            $ip = Utilities::ip();
+            if ($this->throttle->isBlocked($login, $ip)) {
+                return UserServiceLogin::Blocked;
+            }
+
             $user = Models\User::find($login, $login);
 
-            if($user == null) return UserServiceLogin::WrongLogin;
-            if($user->password != $this->hashPassword($password)) return UserServiceLogin::WrongPassword;
+            if($user == null) {
+                $this->throttle->recordFailure($login, $ip);
+                return UserServiceLogin::WrongLogin;
+            }
+            if(!$this->verifyPassword($password, $user->password)) {
+                $this->throttle->recordFailure($login, $ip);
+                return UserServiceLogin::WrongPassword;
+            }
             if($callback != null) {
                 $result = $callback($user);
                 if($result !== true) {
@@ -5052,25 +6081,69 @@ if(defined("USE_USERS")) {
                 }
             }
 
+            // Transparently upgrade legacy (sha1) or outdated hashes now that we know the plain password.
+            if ($this->passwordNeedsRehash($user->password)) {
+                $user->password = $this->hashPassword($password);
+                $user->save();
+            }
+
+            $this->throttle->clear($login);
+
             $auth = $this->authentificatorProvider->get();
             $auth->authenticate($user->id);
+            $this->refreshCurrent();
 
             return UserServiceLogin::Ok;
         }
 
+        /**
+         * Hashes a password with PHP's password_hash (bcrypt today, whatever PASSWORD_DEFAULT is tomorrow).
+         * Older releases stored unsalted sha1 hashes; verifyPassword() still accepts those and login() upgrades them.
+         */
         public function hashPassword(string $password): string {
-            return sha1($password);
+            return password_hash($password, PASSWORD_DEFAULT);
+        }
+
+        public function verifyPassword(string $password, string $storedHash): bool {
+            if ($storedHash === '') return false;
+
+            if (self::isLegacyHash($storedHash)) {
+                return hash_equals($storedHash, sha1($password));
+            }
+
+            return password_verify($password, $storedHash);
+        }
+
+        public function passwordNeedsRehash(string $storedHash): bool {
+            return self::isLegacyHash($storedHash) || password_needs_rehash($storedHash, PASSWORD_DEFAULT);
+        }
+
+        private static function isLegacyHash(string $storedHash): bool {
+            return (bool)preg_match('/^[a-f0-9]{40}$/i', $storedHash);
         }
 
         public function logout() {
             $auth = $this->authentificatorProvider->get();
             $auth->deauthenticate();
+            $this->refreshCurrent();
         }
 
+        /**
+         * The signed-in user, loaded once per request (previously every call ran two queries).
+         */
         public function current(): ?Models\User {
-            if(!$this->isAuthentificated()) return null;
             $auth = $this->authentificatorProvider->get();
-            return Models\User::findById($auth->getValue());
+            $key = $auth->isAuthenticated() ? (string)$auth->getValue() : null;
+
+            if ($this->currentUserResolved && $this->currentUserKey === $key) {
+                return $this->currentUser;
+            }
+
+            $this->currentUserResolved = true;
+            $this->currentUserKey = $key;
+            $this->currentUser = ($key !== null && $key !== '') ? Models\User::findById($key) : null;
+
+            return $this->currentUser;
         }
 
         public function changePassword(string $password): bool {
@@ -5100,9 +6173,13 @@ if(defined("USE_USERS")) {
         }
 
         public function checkResetPasswordTicket(string $token, ?Models\User &$user, ?Models\Ticket &$ticket): UserServiceCheck {
+            $user = null;
             $ticket = TicketService::findByToken($token);
             if($ticket == null) return UserServiceCheck::WrongToken;
             if($ticket->type->value != Models\TicketType::PasswordReset->value) return UserServiceCheck::WrongToken;
+            // A ticket is single-use and expires: without these checks a leaked reset link stayed valid forever.
+            if($ticket->status !== Models\TicketStatus::New) return UserServiceCheck::WrongToken;
+            if(TicketService::isExpired($ticket, TicketService::PASSWORD_RESET_TTL)) return UserServiceCheck::WrongToken;
 
             $user = Models\User::findById($ticket->entityId);
             if($user == null) return UserServiceCheck::WrongToken;
@@ -5110,7 +6187,7 @@ if(defined("USE_USERS")) {
             return UserServiceCheck::Ok;
         }
 
-        public function changePasswordByTicket(string $token, string $password): UserServiceCheck {     
+        public function changePasswordByTicket(string $token, string $password): UserServiceCheck {
             /** @var ?Models\User $user */
             $user = null;
             /** @var ?Models\Ticket $ticket */
@@ -5125,6 +6202,10 @@ if(defined("USE_USERS")) {
                 return UserServiceCheck::WrongToken;
             }
 
+            if (!$this->isPasswordAcceptable($password)) {
+                return UserServiceCheck::PasswordBad;
+            }
+
             $user->password = $this->hashPassword($password);
             $user->save();
 
@@ -5137,9 +6218,18 @@ if(defined("USE_USERS")) {
 }
 
 class TicketService {
+    /** How long a password reset link stays valid (seconds). */
+    public const PASSWORD_RESET_TTL = 3600;
+    /** Length of generated tokens (alphanumeric, ~190 bits of entropy). */
+    public const TOKEN_LENGTH = 32;
+
+    public static function isExpired(Models\Ticket $ticket, int $ttlSeconds): bool {
+        return $ticket->created < time() - $ttlSeconds;
+    }
+
     public static function createTicket(Models\TicketType $type, ?int $entityId = null, ?string $data = null): Models\Ticket {
         $ticket = new Models\Ticket();
-        $ticket->token = Utilities::random(10);
+        $ticket->token = Utilities::random(self::TOKEN_LENGTH);
         $ticket->type = $type;
         $ticket->entityId = $entityId;
         $ticket->data = $data;
@@ -5161,12 +6251,20 @@ class EmailService {
         
         $encodedSubject = '=?utf-8?B?' . base64_encode($subject) . '?=';
 
+        $host = strtolower($_SERVER['SERVER_NAME'] ?? $_SERVER['HTTP_HOST'] ?? 'localhost');
+        $host = preg_replace('/:\d+$/', '', $host);
+        if (!preg_match('/^[a-z0-9.-]+$/', $host)) {
+            $host = 'localhost';
+        }
+
         if(empty($fromEmail)) {
-            $fromEmail = "no-reply@" . $_SERVER['HTTP_HOST'];
+            $fromEmail = "no-reply@" . $host;
         }
         if(empty($fromName)) {
-            $fromName = $_SERVER['HTTP_HOST'];
+            $fromName = $host;
         }
+        $fromEmail = str_replace(["\r", "\n"], '', $fromEmail);
+        $fromName = str_replace(["\r", "\n"], '', $fromName);
 
         $headers = "From: {$fromName} <{$fromEmail}>\r\n";
         $headers .= "Reply-To: {$fromEmail}\r\n";
@@ -5215,11 +6313,33 @@ class Http {
 
 	public function __construct(){
 		$this->init();
-		curl_setopt($this->curl, CURLOPT_SSL_VERIFYPEER, false);
+	}
+
+    /**
+	 * Disables TLS certificate verification (self-signed certificates in development). Off by default since
+	 * an unverified HTTPS connection can be intercepted.
+	 */
+	public function insecure(bool $insecure = true): self {
+		curl_setopt($this->curl, CURLOPT_SSL_VERIFYPEER, !$insecure);
+		curl_setopt($this->curl, CURLOPT_SSL_VERIFYHOST, $insecure ? 0 : 2);
+		return $this;
+	}
+
+	/**
+	 * Connection / total timeouts in seconds (defaults: 10 / 30). Without a timeout a stalled remote host stalls this request too.
+	 */
+	public function setTimeout(int $seconds, ?int $connectSeconds = null): self {
+		curl_setopt($this->curl, CURLOPT_TIMEOUT, $seconds);
+		curl_setopt($this->curl, CURLOPT_CONNECTTIMEOUT, $connectSeconds ?? min(10, $seconds));
+		return $this;
 	}
 
 	public function init(){
 		$this->curl = curl_init();
+        curl_setopt($this->curl, CURLOPT_SSL_VERIFYPEER, true);
+		curl_setopt($this->curl, CURLOPT_SSL_VERIFYHOST, 2);
+		curl_setopt($this->curl, CURLOPT_TIMEOUT, 30);
+		curl_setopt($this->curl, CURLOPT_CONNECTTIMEOUT, 10);
 		$this->returnTransfer = true;
 		$this->executed = false;
 		$this->response = NULL;
@@ -5283,8 +6403,8 @@ class Http {
 			$_params[] = $key."=".rawurlencode($value);
 		}
 	
-		//$urlParts['query'] = http_build_query($params);
-		$url = $urlParts['scheme'] . '://' . $urlParts['host'] . $urlParts['path'];
+		$port = isset($urlParts['port']) ? ':' . $urlParts['port'] : '';
+		$url = ($urlParts['scheme'] ?? 'http') . '://' . ($urlParts['host'] ?? 'localhost') . $port . ($urlParts['path'] ?? '/');
 		return $url . (count($_params) > 0? ('?' . join("&", $_params)):"");
 	}
 
@@ -5424,17 +6544,17 @@ class Http {
 	public function getResponseStatusCode(): bool | int {
 		if(!$this->executed) return false;
 
-		return $this->response->code;
+		return (int)($this->lastCurlDebug['http_code'] ?? 0);
 	}
 
 	public function isError(): bool {
 		if(!$this->executed) return false;
 
-		if (!$this->response || !isset($this->response->code) || $this->response->code !== $this->expectedStatus) {
+		if ($this->lastErrno !== 0 || $this->response === false) {
 			return true;
 		}
 
-		return false;
+		return $this->getResponseStatusCode() !== $this->expectedStatus;
 	}
 }
 
@@ -5442,7 +6562,28 @@ class Request {
     private array $headers = [];
 
     public function __construct(){
-        $this->headers = getallheaders();
+        // getallheaders() is only available under a web SAPI; rebuild the headers from $_SERVER otherwise (CLI, tests).
+        if (function_exists('getallheaders') && PHP_SAPI !== 'cli') {
+            $this->headers = getallheaders() ?: [];
+        } else {
+            $this->headers = [];
+            foreach ($_SERVER as $key => $value) {
+                if (str_starts_with($key, 'HTTP_')) {
+                    $name = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($key, 5)))));
+                    $this->headers[$name] = $value;
+                }
+            }
+        }
+    }
+
+    /**
+     * Case-insensitive header lookup ("X-CSRF-Token" and "x-csrf-token" are the same header).
+     */
+    public function headerIgnoreCase(string $key): ?string {
+        foreach ($this->headers as $name => $value) {
+            if (strcasecmp($name, $key) === 0) return $value;
+        }
+        return null;
     }
 
     public function get($key) : string | null {
@@ -5468,7 +6609,7 @@ class Request {
     }
 
     public function is(string | Method $type): bool {
-        $method = strtolower($_SERVER['REQUEST_METHOD']);
+        $method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'GET');
         if(is_string($type))
             return $method === trim(strtolower($type));
         
@@ -5514,10 +6655,24 @@ class Request {
     }
 
     public function isSecure(): bool {
-        return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ||
+        return self::isHttps();
+    }
+
+    public static function isHttps(): bool {
+        return (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') ||
         (!empty($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
-        (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
-    }    
+        (!empty($_SERVER['REQUEST_SCHEME']) && $_SERVER['REQUEST_SCHEME'] === 'https') ||
+        (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https'
+            && in_array($_SERVER['REMOTE_ADDR'] ?? '', Utilities::trustedProxies(), true));
+    }
+
+    /**
+     * True when the request body is JSON (Content-Type: application/json).
+     */
+    public function hasJsonBody(): bool {
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+        return stripos($contentType, 'application/json') !== false;
+    }
 
     /**
      * @param bool $associative
@@ -5545,7 +6700,9 @@ class Response {
     public const HTTP_OK = 200;
     public const HTTP_BAD_REQUEST = 400;
     public const HTTP_UNAUTHORIZED = 401;
+    public const HTTP_FORBIDDEN = 403;
     public const HTTP_NOT_FOUND = 404;
+    public const HTTP_METHOD_NOT_ALLOWED = 405;
     public const HTTP_INTERNAL_SERVER_ERROR = 500;
 
     public function __construct(Request $request){
@@ -5596,16 +6753,22 @@ enum ControllerActionType {
     case RedirectToRoute;
 }
 
-class ControllerMethodNotAllowedException extends Exception {
+class ControllerMethodNotAllowedException extends HttpException {
     private Method $method;
 
     public function __construct(Method $method) {
-        parent::__construct("Method not allowed", Response::HTTP_BAD_REQUEST);
+        parent::__construct(Response::HTTP_METHOD_NOT_ALLOWED, "Method Not Allowed");
         $this->method = $method;
     }
 
     public function getMethod(): Method {
         return $this->method;
+    }
+}
+
+class CsrfTokenMismatchException extends HttpException {
+    public function __construct() {
+        parent::__construct(Response::HTTP_FORBIDDEN, "Invalid or missing CSRF token");
     }
 }
 
@@ -5637,7 +6800,7 @@ class ControllerAction {
         if(substr($class, 0, strlen("Controllers\\")) == "Controllers\\") {
             $class = substr($class, strlen("Controllers\\"));
         }
-        return strtolower($class);
+        return strtolower(str_replace('\\', '/', $class));
     }
 
     public function shouldClearContent(): bool {
@@ -5764,6 +6927,13 @@ class Controller {
     protected function redirectToRoute(string $routeName, array $params = []): ControllerAction {
         return ControllerAction::makeRedirectToRouteModel($routeName, $params);
     }
+
+    /**
+     * Stops the action with an HTTP error status (403, 404, ...). The router renders a plain response.
+     */
+    protected function abort(int $status, string $message = ""): never {
+        throw new HttpException($status, $message);
+    }
 }
 
 class AuthentificatorProvider {
@@ -5818,7 +6988,7 @@ class Authentication {
                         ])
                         ->setDefaultAuthenticationMethod('cookies')
                         ->setAuthenticationUrl(isset($cfg["AUTH_URL"]) && $cfg["AUTH_URL"] != ""?  $cfg["AUTH_URL"]: "login/")
-                        ->requireAuthentication(isset($cfg["AUTH_REQUIRED"]) && $cfg["AUTH_REQUIRED"] != ""? boolval($cfg["AUTH_REQUIRED"]): true);
+                        ->requireAuthentication(isset($cfg["AUTH_REQUIRED"]) && $cfg["AUTH_REQUIRED"] != ""? Config::parseBool($cfg["AUTH_REQUIRED"], true): true);
                     $authentificatorProvider->set($auth);
                 }else{
                     throw new Exception("Unknown authentificator type: {$type}");
@@ -5914,13 +7084,29 @@ interface AuthenticationMethod {
 
 class CookieAuthentication implements AuthenticationMethod {
     private string $cookieName = "session";
-    private int $cookieExpire = 0;
+    /** Cookie lifetime in seconds from the moment of login. */
+    private int $cookieExpire = 86400;
 
+    /**
+     * @param string|int $expiration seconds (int) or a strtotime() offset such as "+1 day"; 0 means the default of one day.
+     */
     public function __construct(string $cookieName = "", string | int $expiration = 0) {
         if($cookieName != "") {
             $this->cookieName = $cookieName;
         }
-        $this->cookieExpire = (is_int($expiration) && $expiration == 0? strtotime("+1 day", 0): (is_int($expiration)? $expiration: strtotime($expiration)));        
+        if (is_int($expiration)) {
+            $this->cookieExpire = $expiration > 0 ? $expiration : 86400;
+        } else {            
+            $absolute = strtotime($expiration);
+            if ($absolute === false) {
+                throw new InvalidArgumentException("Invalid cookie expiration: '$expiration'");
+            }
+            $this->cookieExpire = max(1, $absolute - time());
+        }
+    }
+
+    public function getExpirationSeconds(): int {
+        return $this->cookieExpire;
     }
 
     public function authenticate(string | object $value): bool {
@@ -5945,7 +7131,7 @@ class CookieAuthentication implements AuthenticationMethod {
     }
 }
 
-if(defined("USE_EXCEPTION_HANDLER")) {
+if(USE_EXCEPTION_HANDLER) {
     class GlobalErrorHandler {
         private string $errorDir;
         private bool $displayErrors;
@@ -5962,7 +7148,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
             $this->vscodeProtocol = $vscodeProtocol;
             $this->maxLogFiles = $maxLogFiles;
             
-            // Vytvoř složku pro chyby pokud neexistuje
+            // Create the error directory if it does not exist
             if (!is_dir($this->errorDir)) {
                 mkdir($this->errorDir, 0755, true);
             }
@@ -6079,7 +7265,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                 'message' => $exception->getMessage(),
                 'file' => $exception->getFile(),
                 'line' => $line,
-                'trace' => $exception->getTrace(), // Použijeme strukturovaný trace
+                'trace' => $exception->getTrace(), //structured trace for the error page
                 'trace_string' => $exception->getTraceAsString(),
                 'code' => $exception->getCode(),
                 'request_uri' => $_SERVER['REQUEST_URI'] ?? 'CLI',
@@ -6149,7 +7335,7 @@ if(defined("USE_EXCEPTION_HANDLER")) {
                 $fileShort = basename($file);
                 $dirPath = dirname($file);
                 
-                // Získej náhled kódu pro tento krok
+                // Code preview for this frame
                 $codePreview = '';
                 if ($file !== 'unknown' && file_exists($file)) {
                     $codeContext = $this->getFileContext($file, $line, 2);
@@ -6362,7 +7548,8 @@ $container->setSingleton(Request::class);
 $container->setSingleton(Response::class);
 $container->setSingleton(AuthentificatorProvider::class);
 
-if(defined("USE_USERS")) {
+if(USE_USERS) {
+    $container->setSingleton(LoginThrottle::class);
     $container->setSingleton(UserService::class);
 }
 
@@ -6376,7 +7563,7 @@ $configProvider->register(['TIME_ZONE'], function(array $cfg) {
 Database::registerConfig($configProvider);
 Authentication::registerConfig($configProvider);
 
-if(defined("USE_EXCEPTION_HANDLER")) {
+if(USE_EXCEPTION_HANDLER) {
     $container->setSingleton(GlobalErrorHandler::class);
     $container->get(GlobalErrorHandler::class)->register();
 }

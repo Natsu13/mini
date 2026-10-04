@@ -1,0 +1,46 @@
+{include "header", ["title" => $model["article"] === null ? "New article" : "Edit article"]}
+
+{if count($model["errors"]) > 0}
+    <div class="flash flash-error">
+        {for $model["errors"] as $field => $message}
+            <div>{$message}</div>
+        {/for}
+    </div>
+{/if}
+
+<form method="post" class="form">
+    {csrf}
+    <label for="title">Title</label>
+    <input type="text" id="title" name="title" value="{$model['input']['title']}" maxlength="200" required />
+
+    <label for="slug">Slug <span class="muted">(optional, generated from the title)</span></label>
+    <input type="text" id="slug" name="slug" value="{$model['input']['slug']}" maxlength="220" pattern="[a-z0-9]+(-[a-z0-9]+)*" />
+
+    <label for="content">Content</label>
+    <textarea id="content" name="content" rows="12">{$model["input"]["content"]}</textarea>
+
+    <label class="checkbox">
+        <input type="checkbox" name="publish" value="1" checked="{$model['input']['publish']}" /> Published (visible on the blog)
+    </label>
+
+    {if $model["article"] !== null}
+        <p class="muted">
+            Created {Date::toString($model['article']->created)}, last change {Date::toString($model['article']->updated)}.
+            {if $model["article"]->isPublished()}
+                Public URL: <a href="{route 'blog.show', ['slug' => $model['article']->slug]}">{route 'blog.show', ['slug' => $model['article']->slug]}</a>
+            {/if}
+        </p>
+    {/if}
+
+    <div class="actions">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{route 'home'}">Back to my articles</a>
+    </div>
+</form>
+
+{if $model["article"] !== null}
+    <form method="post" action="{route 'article.delete', ['id' => $model['article']->id]}" class="form-inline" onsubmit="return confirm('Delete this article?');">
+        {csrf}
+        <button type="submit" class="btn btn-danger">Delete this article</button>
+    </form>
+{/if}

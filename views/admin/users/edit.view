@@ -1,0 +1,30 @@
+{include "header", ["title" => "Edit user"]}
+
+{if count($model["errors"]) > 0}
+    <div class="flash flash-error">
+        {for $model["errors"] as $field => $message}
+            <div>{$message}</div>
+        {/for}
+    </div>
+{/if}
+
+<form method="post" class="form">
+    {csrf}
+    <label>Login</label>
+    <input type="text" value="{$model['user']->login}" readonly />
+
+    <label for="email">E-mail</label>
+    <input type="text" id="email" name="email" value="{$model['input']['email']}" maxlength="100" required />
+
+    <label for="permission_id">Role</label>
+    <select id="permission_id" name="permission_id">
+        {for $model["permissions"] as $permission}
+            <option value="{$permission->id}" selected="{(int)$model['input']['permission_id'] === $permission->id}">{$permission->name} (level {$permission->level})</option>
+        {/for}
+    </select>
+
+    <div class="actions">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{route 'admin.users'}">Back to users</a>
+    </div>
+</form>

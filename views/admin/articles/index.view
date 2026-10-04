@@ -1,0 +1,40 @@
+{include "header", ["title" => "Articles"]}
+
+<p class="filters">
+    <a href="{route 'admin.articles'}" class="{$model['status'] === '' ? 'active' : ''}">All</a>
+    <a href="{route 'admin.articles'}?status=published" class="{$model['status'] === 'published' ? 'active' : ''}">Published</a>
+    <a href="{route 'admin.articles'}?status=draft" class="{$model['status'] === 'draft' ? 'active' : ''}">Drafts</a>
+</p>
+
+{if count($model["articles"]) == 0}
+    <p class="empty">No articles.</p>
+{else}
+    <table class="table">
+        <tr><th>Title</th><th>Author</th><th>Status</th><th>Updated</th><th></th></tr>
+        {for $model["articles"] as $article}
+            <tr>
+                <td><a href="{route 'article.edit', ['id' => $article->id]}">{$article->title}</a></td>
+                <td>{if $article->getAuthor()}{$article->getAuthor()->login}{else}-{/if}</td>
+                <td>{if $article->isPublished()}<span class="badge badge-ok">published</span>{else}<span class="badge">draft</span>{/if}</td>
+                <td class="muted">{Date::toString($article->updated)}</td>
+                <td class="actions">
+                    <form method="post" action="{route 'admin.articles.status', ['id' => $article->id]}" class="inline">
+                        {csrf}
+                        {if $article->isPublished()}
+                            <input type="hidden" name="status" value="draft" />
+                            <button type="submit" class="btn btn-link">Unpublish</button>
+                        {else}
+                            <input type="hidden" name="status" value="published" />
+                            <button type="submit" class="btn btn-link">Publish</button>
+                        {/if}
+                    </form>
+                    <form method="post" action="{route 'admin.articles.delete', ['id' => $article->id]}" class="inline" onsubmit="return confirm('Delete this article?');">
+                        {csrf}
+                        <button type="submit" class="btn btn-link danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {/for}
+    </table>
+    {!$model["paginator"]->render()}
+{/if}

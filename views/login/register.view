@@ -1,41 +1,31 @@
-<h1>Register</h1>
+{include "header", ["title" => "Register"]}
 
 {if isset($model["error"])}
-    <div class="message error">{$model["error"]}</div>
+    <div class="flash flash-error">{$model["error"]}</div>
 {elseif isset($model["success"]) && $model["success"]}
-    <div class="message success">Registered succesfully</div>
+    <div class="flash flash-success">Registered successfully, you can <a href="{route 'auth.login'}">sign in</a>.</div>
 {/if}
 
 {if !(isset($model["success"]) && $model["success"])}
-    <form action="{~/register/}" method="post">
-        <div>
-            <label>Login</label><br/>
-            <input type="text" name="login" />
+    <form action="{route 'auth.register'}" method="post" class="form">
+        {csrf}
+        <label for="login">Login</label>
+        <input type="text" id="login" name="login" maxlength="100" />
+        <label for="email">E-mail</label>
+        <input type="text" id="email" name="email" maxlength="100" />
+        <label for="password">Password <span class="muted">(at least {UserService::MIN_PASSWORD_LENGTH} characters)</span></label>
+        <input type="password" id="password" name="password" />
+        <label for="confirmPassword">Confirm password</label>
+        <input type="password" id="confirmPassword" name="confirmPassword" />
+        <label>Gender</label>
+        <div class="radios">
+            <label><input type="radio" name="gender" value="man" /> Man</label>
+            <label><input type="radio" name="gender" value="woman" /> Woman</label>
+            <label><input type="radio" name="gender" value="other" /> Other</label>
         </div>
-        <div>
-            <label>Email</label><br/>
-            <input type="text" name="email" />
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">Register</button>
+            <a href="{route 'auth.login'}">I already have an account</a>
         </div>
-        <div>
-            <label>Password</label><br/>
-            <input type="password" name="password" />
-        </div>
-        <div>
-            <label>Confirm Password</label><br/>
-            <input type="password" name="confirmPassword" />
-        </div>
-        <div>
-            <label>Gender</label><br/>
-            <label>
-                <input type=radio name="gender" value="man"> Man
-            </label>
-            <label>
-                <input type=radio name="gender" value="woman"> Woman
-            </label>
-            <label> 
-                <input type=radio name="gender" value="other"> Other
-            </label>
-        </div>
-        <input type="submit" value="Register"/>
     </form>
 {/if}

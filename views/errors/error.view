@@ -1,0 +1,5 @@
+<section class="error-page">
+    <h1>{$model["status"]}</h1>
+    <p>{$model["message"]}</p>
+    <p><a href="{route 'blog.index'}">Back to the blog</a></p>
+</section>

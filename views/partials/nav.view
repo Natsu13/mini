@@ -1,0 +1,30 @@
+<nav class="topbar">
+    <div class="container topbar-inner">
+        <a class="brand" href="{route 'blog.index'}">Mini</a>
+        <div class="links">
+            <a href="{route 'blog.index'}">Blog</a>
+            {if $model["user"] !== null}
+                <a href="{route 'home'}">My articles</a>
+                <a href="{route 'article.new'}">New article</a>
+                {if $model["level"] >= \Models\Permission::LEVEL_ADMIN}
+                    <a href="{route 'admin.dashboard'}">Admin</a>
+                {/if}
+            {/if}
+        </div>
+        <div class="account">
+            {if $model["user"] !== null}
+                <span class="muted">{$model["user"]->login}</span>
+                <form method="post" action="{route 'auth.logout'}" class="inline">
+                    {csrf}
+                    <button type="submit" class="btn btn-link">Sign out</button>
+                </form>
+            {else}
+                <a href="{route 'auth.login'}">Sign in</a>
+                <a href="{route 'auth.register'}">Register</a>
+            {/if}
+        </div>
+    </div>
+</nav>
+<div class="container">
+    {flash}
+</div>

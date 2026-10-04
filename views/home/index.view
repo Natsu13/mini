@@ -1,0 +1,48 @@
+{include "header", ["title" => "My articles"]}
+
+<p class="muted">
+    Signed in as <strong>{$model["user"]->login}</strong> ({$model["user"]->email}),
+    role {if $model["permission"]}{!$model["permission"]->print()}{else}<i>none</i>{/if}.
+    {$model["stats"]["total"]} articles, {$model["stats"]["published"]} published.
+</p>
+
+<p><a class="btn" href="{route 'article.new'}">Write a new article</a></p>
+
+{if count($model["articles"]) == 0}
+    <p class="empty">You have not written anything yet.</p>
+{else}
+    <table class="table">
+        <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Updated</th>
+            <th></th>
+        </tr>
+        {for $model["articles"] as $article}
+            <tr>
+                <td><a href="{route 'article.edit', ['id' => $article->id]}">{$article->title}</a></td>
+                <td>
+                    {if $article->isPublished()}
+                        <span class="badge badge-ok">published</span>
+                    {else}
+                        <span class="badge">draft</span>
+                    {/if}
+                </td>
+                <td class="muted">{Date::toString($article->updated)}</td>
+                <td class="actions">
+                    {if $article->isPublished()}
+                        <a href="{route 'blog.show', ['slug' => $article->slug]}">View</a>
+                    {else}
+                        <a href="{route 'article.show', ['id' => $article->id]}">Preview</a>
+                    {/if}
+                    <a href="{route 'article.edit', ['id' => $article->id]}">Edit</a>
+                    <form method="post" action="{route 'article.delete', ['id' => $article->id]}" class="inline" onsubmit="return confirm('Delete this article?');">
+                        {csrf}
+                        <button type="submit" class="btn btn-link danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {/for}
+    </table>
+    {!$model["paginator"]->render()}
+{/if}

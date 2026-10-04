@@ -1,0 +1,25 @@
+{include "header", ["title" => "Administration"]}
+
+<div class="stats">
+    <a class="stat" href="{route 'admin.users'}"><strong>{$model["users"]}</strong> users</a>
+    <a class="stat" href="{route 'admin.articles'}"><strong>{$model["articles"]}</strong> articles</a>
+    <a class="stat" href="{route 'admin.articles'}?status=published"><strong>{$model["published"]}</strong> published</a>
+    <a class="stat" href="{route 'admin.articles'}?status=draft"><strong>{$model["drafts"]}</strong> drafts</a>
+</div>
+
+<h2>Recently changed articles</h2>
+{if count($model["latest"]) == 0}
+    <p class="empty">No articles yet.</p>
+{else}
+    <table class="table">
+        <tr><th>Title</th><th>Author</th><th>Status</th><th>Updated</th></tr>
+        {for $model["latest"] as $article}
+            <tr>
+                <td><a href="{route 'article.edit', ['id' => $article->id]}">{$article->title}</a></td>
+                <td>{if $article->getAuthor()}{$article->getAuthor()->login}{else}-{/if}</td>
+                <td>{if $article->isPublished()}<span class="badge badge-ok">published</span>{else}<span class="badge">draft</span>{/if}</td>
+                <td class="muted">{Date::toString($article->updated)}</td>
+            </tr>
+        {/for}
+    </table>
+{/if}

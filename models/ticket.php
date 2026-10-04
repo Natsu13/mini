@@ -1,8 +1,6 @@
 <?php
 namespace Models;
 
-use Database;
-
 #[\Table('tickets')]
 class Ticket extends \Model {
     #[\PrimaryKey]

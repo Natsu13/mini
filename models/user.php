@@ -11,6 +11,7 @@ class User extends \Model {
     #[\Column('login', length: 100)]
     public string $login;
 
+    /** password_hash() output (bcrypt is 60 characters, argon2id up to ~100). */
     #[\Column('password', length: 100)]
     public string $password;
 
@@ -31,14 +32,31 @@ class User extends \Model {
     /**
      * @return \QueryBuilder<\Models\Article>
      */
-    #[\Relation(\RelationType::HasMany, Article::class, 'author_id')]
+    #[\Relation(\RelationType::HasMany, Article::class, 'author_id', cascade: true)]
     public function getArticles(): \QueryBuilder {
         return $this->getRelation("articles");
+    }
+
+    public function level(): int {
+        $permission = $this->getPermission();
+        return $permission === null ? 0 : (int)$permission->level;
+    }
+
+    public function hasLevel(int $level): bool {
+        return $this->level() >= $level;
+    }
+
+    public function isAdmin(): bool {
+        return $this->hasLevel(Permission::LEVEL_ADMIN);
     }
 
     public static function findByEmail(string $email): ?User {
         $obj = (new static);
         return $obj->where(["email" => $email])->fetch();
+    }
+
+    public static function findByLogin(string $login): ?User {
+        return self::where(["login" => $login])->fetch();
     }
 
     public static function find(string $login, string $email): ?User {
