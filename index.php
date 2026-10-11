@@ -31,6 +31,7 @@ $page->title = "Mini";
 $page->language = "en";
 $page->addStyle(Router::url() . "/assets/app.css");
 
+//echo Model::generateSyncQuery(Models\Sessions::class);exit();
 
 $router->add("apitest", function () use ($response, $request) {
     $response->enableCors();

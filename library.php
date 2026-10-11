@@ -1,5 +1,6 @@
 <?php
 if(!defined("USE_USERS")) define("USE_USERS", true);
+if(!defined("USE_SESSIONS_DB")) define("USE_SESSIONS_DB", true);
 if(!defined("USE_EXCEPTION_HANDLER")) define("USE_EXCEPTION_HANDLER", true);
 if(!defined("DEBUG")) define("DEBUG", false);
 
@@ -1072,6 +1073,23 @@ class Utilities {
             return ['127.0.0.1', '::1'];
         }
         return array_values(array_filter(array_map('trim', explode(',', $configured)), 'strlen'));
+    }
+
+    /**
+     * Returns a keyed fingerprint of the client network (not of the exact address).
+     * IPv4 is truncated to /24, IPv6 to /48, then HMAC-ed with the server secret.
+     * Good enough to detect "the user moved to a different network", useless for reverse lookup without the key.
+     */
+    public static function ipFingerprint(string $ip): string {
+        $bin = @inet_pton($ip);
+        if ($bin === false) {
+            return '';
+        }
+
+        $bytes = strlen($bin) === 4 ? 3 : 6; // /24 for IPv4, /48 for IPv6
+        $network = substr($bin, 0, $bytes);
+
+        return hash_hmac('sha256', $network, Cookies::secret() . '|ip');
     }
 
     public static function ip(bool $pure = false): string {
@@ -5018,25 +5036,15 @@ abstract class Model {
     }
 
     /**
-     * Generates an SQL CREATE TABLE statement based on the model's attributes and properties.
+     * Describes every column of the model (type, collation, nullability, default, primary key flags).
+     * Shared by the CREATE TABLE and the sync (ALTER TABLE) generators.
      *
-     * @param string $modelClass Fully qualified class name of the model.
-     * @param string $defaultCharset Default charset for the table (MySQL only, default: utf8)
-     * @param string $defaultCollation Default collation for text-based columns (MySQL only, default: utf8_bin)
-     * @param string|null $dialect "mysql" or "sqlite"; defaults to the driver of the active connection (mysql when not connected).
-     * @return string The generated SQL statement(s).
-     * @throws Exception If the table attribute is not found.
+     * @return array<string, array{type:string, collate:string, nullable:bool, default:string, pk:bool, auto:bool}>
      */
-    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8mb4_bin", string $defaultCollation = "utf8_bin", ?string $dialect = null): string {
-        $dialect = strtolower($dialect ?? Container::getInstance()->get(Database::class)->driver());
-        $sqlite = $dialect === 'sqlite';
-
+    private static function describeColumns(string $modelClass, bool $sqlite, string $defaultCollation): array {
         $meta = ModelMetadata::for($modelClass);
         $reflection = new ReflectionClass($modelClass);
-        $tableName = $meta->table;
-
-        $columns = [];
-        $definedColumns = [];
+        $result = [];
 
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             if ($property->isStatic()) continue;
@@ -5068,18 +5076,14 @@ abstract class Model {
             $primaryKey = $property->getName() === $meta->primaryKeyProperty;
             $autoIncrement = $primaryKey && $typeName === 'int' && $meta->primaryKeyAutoIncrement;
 
-            $charset = "";
+            $collate = "";
             if ($typeName === 'string') {
                 $sqlType = $length ? "varchar({$length})" : "text";
-                if (!$sqlite) $charset = " COLLATE {$defaultCollation}";
+                if (!$sqlite) $collate = " COLLATE {$defaultCollation}";
             } else {
                 switch ($typeName) {
                     case 'int':
-                        if ($sqlite) {
-                            $sqlType = 'integer';
-                        } else {
-                            $sqlType = $length !== null ? "int({$length})" : "int";
-                        }
+                        $sqlType = $sqlite ? 'integer' : ($length !== null ? "int({$length})" : "int");
                         break;
                     case 'float':
                         $sqlType = $sqlite ? 'real' : 'float';
@@ -5089,11 +5093,9 @@ abstract class Model {
                         break;
                     default:
                         $sqlType = 'text';
-                        if (!$sqlite) $charset = " COLLATE {$defaultCollation}";
+                        if (!$sqlite) $collate = " COLLATE {$defaultCollation}";
                 }
             }
-
-            $nullability = (!$primaryKey && $type && $type->allowsNull()) ? 'NULL' : 'NOT NULL';
 
             $defaultClause = "";
             if ($defaultValue !== null) {
@@ -5107,19 +5109,70 @@ abstract class Model {
                 $defaultClause = " DEFAULT " . $defaultValue;
             }
 
-            if ($primaryKey) {
-                if ($sqlite) {
-                    // SQLite only auto-generates ids for the exact spelling "INTEGER PRIMARY KEY".
-                    $colDefinition = "`{$columnName}` {$sqlType} PRIMARY KEY" . ($autoIncrement ? " AUTOINCREMENT" : "");
-                } else {
-                    $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability} PRIMARY KEY" . ($autoIncrement ? " AUTO_INCREMENT" : "");
-                }
-            } else {
-                $colDefinition = "`{$columnName}` {$sqlType}{$charset} {$nullability}";
-            }
-            $colDefinition .= $defaultClause;
+            $result[$columnName] = [
+                'type'     => $sqlType,
+                'collate'  => $collate,
+                'nullable' => !$primaryKey && $type && $type->allowsNull(),
+                'default'  => $defaultClause,
+                'pk'       => $primaryKey,
+                'auto'     => $autoIncrement,
+            ];
+        }
 
-            $columns[] = $colDefinition;
+        return $result;
+    }
+
+    /**
+     * Builds one column definition. $forAlter drops PRIMARY KEY / AUTO_INCREMENT (primary keys are never altered).
+     */
+    private static function columnSql(string $name, array $c, bool $sqlite, bool $forAlter = false): string {
+        $null = $c['nullable'] ? 'NULL' : 'NOT NULL';
+        $default = $c['default'];
+
+        // SQLite cannot ADD a NOT NULL column without a default
+        if ($forAlter && $sqlite && !$c['nullable'] && $default === '') {
+            $default = in_array($c['type'], ['integer', 'real'], true) ? ' DEFAULT 0' : " DEFAULT ''";
+        }
+
+        if ($c['pk'] && !$forAlter) {
+            if ($sqlite) {
+                // SQLite only auto-generates ids for the exact spelling "INTEGER PRIMARY KEY".
+                $sql = "`{$name}` {$c['type']} PRIMARY KEY" . ($c['auto'] ? " AUTOINCREMENT" : "");
+            } else {
+                $sql = "`{$name}` {$c['type']}{$c['collate']} {$null} PRIMARY KEY" . ($c['auto'] ? " AUTO_INCREMENT" : "");
+            }
+            return $sql . $default;
+        }
+
+        return "`{$name}` {$c['type']}{$c['collate']} {$null}" . $default;
+    }
+
+    /**
+     * Generates an SQL CREATE TABLE statement based on the model's attributes and properties.
+     *
+     * @param string $modelClass Fully qualified class name of the model.
+     * @param string $defaultCharset Default charset for the table (MySQL only, default: utf8)
+     * @param string $defaultCollation Default collation for text-based columns (MySQL only, default: utf8_bin)
+     * @param string|null $dialect "mysql" or "sqlite"; defaults to the driver of the active connection (mysql when not connected).
+     * @return string The generated SQL statement(s).
+     * @throws Exception If the table attribute is not found.
+     */
+    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8mb4", string $defaultCollation = "utf8mb4_bin", ?string $dialect = null): string {
+        $dialect = strtolower($dialect ?? Container::getInstance()->get(Database::class)->driver());
+        $sqlite = $dialect === 'sqlite';
+
+        $meta = ModelMetadata::for($modelClass);
+        $reflection = new ReflectionClass($modelClass);
+        $tableName = $meta->table;
+
+        $columns = [];
+        $definedColumns = [];
+
+        $described = self::describeColumns($modelClass, $sqlite, $defaultCollation);
+        $columns = [];
+        $definedColumns = [];
+        foreach ($described as $columnName => $c) {
+            $columns[] = self::columnSql($columnName, $c, $sqlite);
             $definedColumns[$columnName] = true;
         }
 
@@ -5175,6 +5228,102 @@ abstract class Model {
     }
 
     /**
+     * Returns the SQL needed to bring the table in sync with the model:
+     *  - table does not exist -> CREATE TABLE
+     *  - table exists         -> ALTER TABLE with ADD COLUMN for missing columns and (MySQL only) MODIFY COLUMN for changed ones
+     * Columns that exist only in the database are NEVER dropped, they are reported in a comment.
+     * Returns an empty string when the table is already up to date.
+     */
+    public static function generateSyncQuery(string $modelClass, string $defaultCharset = "utf8mb4", string $defaultCollation = "utf8mb4_bin", bool $modifyExisting = true): string {
+        $db = Container::getInstance()->get(Database::class);
+        $pdo = $db->getConnection();
+        $dialect = $db->driver();
+        $sqlite = $dialect === 'sqlite';
+
+        $meta = ModelMetadata::for($modelClass);
+        $table = $meta->table;
+
+        $existing = self::fetchExistingColumns($pdo, $table, $sqlite);
+        if ($existing === []) {
+            return self::generateCreateTableQuery($modelClass, $defaultCharset, $defaultCollation, $dialect);
+        }
+
+        $described = self::describeColumns($modelClass, $sqlite, $defaultCollation);
+        $changes = [];
+        $previous = null;
+
+        foreach ($described as $name => $c) {
+            if (!isset($existing[$name])) {
+                $after = (!$sqlite && $previous !== null) ? " AFTER `{$previous}`" : "";
+                $changes[] = $sqlite
+                    ? "ALTER TABLE `{$table}` ADD COLUMN " . self::columnSql($name, $c, true, true) . ";"
+                    : "ADD COLUMN " . self::columnSql($name, $c, false, true) . $after;
+            } elseif ($modifyExisting && !$sqlite && !$c['pk']) {
+                $actual = $existing[$name];
+                $typeDiffers = self::normalizeType($c['type']) !== self::normalizeType($actual['type']);
+                $nullDiffers = $c['nullable'] !== $actual['nullable'];
+
+                if ($typeDiffers || $nullDiffers) {
+                    $changes[] = "MODIFY COLUMN " . self::columnSql($name, $c, false, true);
+                }
+            }
+            $previous = $name;
+        }
+
+        $sql = "";
+        if ($changes !== []) {
+            $sql = $sqlite
+                ? implode("\n", $changes)
+                : "ALTER TABLE `{$table}`\n    " . implode(",\n    ", $changes) . ";";
+        }
+
+        // Report (but never drop) columns that are not in the model
+        foreach (array_diff_key($existing, $described) as $name => $_) {
+            $sql .= "\n-- Column `{$name}` exists in the database but not in the model (not dropped)";
+        }
+
+        return trim($sql);
+    }
+
+    /**
+     * @return array<string, array{type:string, nullable:bool}> empty when the table does not exist
+     */
+    private static function fetchExistingColumns(PDO $pdo, string $table, bool $sqlite): array {
+        $result = [];
+
+        if ($sqlite) {
+            $rows = $pdo->query("PRAGMA table_info(`" . str_replace('`', '', $table) . "`)")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $row) {
+                $result[$row['name']] = ['type' => $row['type'], 'nullable' => (int)$row['notnull'] === 0];
+            }
+            return $result;
+        }
+
+        $stmt = $pdo->prepare(
+            "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+        );
+        $stmt->execute([':t' => $table]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $result[$row['COLUMN_NAME']] = ['type' => $row['COLUMN_TYPE'], 'nullable' => $row['IS_NULLABLE'] === 'YES'];
+        }
+        return $result;
+    }
+
+    /**
+     * Makes the expected type ("boolean", "int(11)") and the real one ("tinyint(1)", "int") comparable.
+     */
+    private static function normalizeType(string $type): string {
+        $type = strtolower(trim($type));
+        if ($type === 'boolean' || $type === 'bool') {
+            return 'tinyint(1)';
+        }
+        // MySQL 8 dropped display widths of integer types (int(11) -> int); tinyint(1) is kept on purpose
+        return preg_replace('/^(smallint|mediumint|int|bigint)\(\d+\)/', '$1', $type);
+    }
+
+    /**
      * Runs the CREATE TABLE statement(s) of the given model classes on the active connection.
      * Handy for tests, SQLite setups and first-run installers.
      *
@@ -5187,6 +5336,39 @@ abstract class Model {
                 $db->exec(rtrim($statement, ";"));
             }
         }
+    }
+
+    /**
+     * Runs the generated sync SQL. Comment lines are skipped, statements are executed one by one.
+     * Returns the number of executed statements.
+     */
+    public static function syncTable(string $modelClass): int {
+        $sql = self::generateSyncQuery($modelClass);
+        if ($sql === '') {
+            return 0;
+        }
+
+        $pdo = Container::getInstance()->get(Database::class)->getConnection();
+
+        // Drop "-- ..." comment lines, then split by ";" at the end of a line
+        $lines = array_filter(
+            explode("\n", $sql),
+            fn(string $l) => !str_starts_with(ltrim($l), '--')
+        );
+        $statements = array_filter(array_map('trim', preg_split('/;\s*(\n|$)/', implode("\n", $lines))));
+
+        foreach ($statements as $statement) {
+            $pdo->exec($statement);
+        }
+        return count($statements);
+    }
+
+    public static function syncTables(string ...$modelClasses): int {
+        $count = 0;
+        foreach ($modelClasses as $class) {
+            $count += self::syncTable($class);
+        }
+        return $count;
     }
 }
 
@@ -5971,6 +6153,9 @@ if(USE_USERS) {
             $this->enabled = $enabled && class_exists(Models\LoginAttempt::class);
         }
 
+        /**
+         * @return \QueryBuilder<\Models\LoginAttempt>
+         */
         private function recentFailures(string $login, string $ip): QueryBuilder {
             return Models\LoginAttempt::where(fn(QueryBuilderWhere $w) => $w->and(['login' => $login])->or(['ip' => $ip]))
                 ->where(['created >' => time() - $this->windowSeconds]);
@@ -6012,7 +6197,7 @@ if(USE_USERS) {
         }
     }
 
-class UserService {
+    class UserService {
         private Router $router;
         private AuthentificatorProvider $authentificatorProvider;
         private LoginThrottle $throttle;
@@ -7218,6 +7403,7 @@ class CookieAuthentication implements AuthenticationMethod {
     private string $cookieName = "session";
     /** Cookie lifetime in seconds from the moment of login. */
     private int $cookieExpire = 86400;
+    private bool $useDbSession = false;    
 
     /**
      * @param string|int $expiration seconds (int) or a strtotime() offset such as "+1 day"; 0 means the default of one day.
@@ -7235,6 +7421,10 @@ class CookieAuthentication implements AuthenticationMethod {
             }
             $this->cookieExpire = max(1, $absolute - time());
         }
+
+        if(defined("USE_SESSIONS_DB") && USE_SESSIONS_DB) {
+            $this->useDbSession = true;
+        }
     }
 
     public function getExpirationSeconds(): int {
@@ -7243,22 +7433,65 @@ class CookieAuthentication implements AuthenticationMethod {
 
     public function authenticate(string | object $value): bool {
         if($value == null) return false;
+
+        if($this->useDbSession) {
+            $token = bin2hex(random_bytes(32));
+            $session = new \Models\Sessions();
+            $session->hash = \Models\Sessions::hashToken($token); 
+            if(!is_numeric($value)) {
+                throw new Exception("CookieAuthentication with database session requires a numeric user ID as the value.");
+            }
+            $session->userId = (int)$value;
+            $session->expiresAt = time() + $this->cookieExpire;
+            $session->ip = Utilities::ip();
+            $session->ipHash = Utilities::ipFingerprint($session->ip);
+            $session->userAgent = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
+            $session->save();
+            Cookies::set($this->cookieName, $token, $this->cookieExpire);
+            return true;
+        }
+
         Cookies::set($this->cookieName, $value, $this->cookieExpire);
         return true;
     }
 
     public function deauthenticate(){
         if(isset($_COOKIE[$this->cookieName])) {
+            if($this->useDbSession) {
+                $token = $_COOKIE[$this->cookieName];
+                $session = \Models\Sessions::findActive($token);
+                if($session) {
+                    $session->deactivate()->save();
+                }
+            }
             Cookies::delete($this->cookieName);
         }
     }
 
     public function isAuthenticated(): bool {
-        return isset($_COOKIE[$this->cookieName]) && Cookies::security_check($this->cookieName);
+        $isCookiesValid = isset($_COOKIE[$this->cookieName]) && Cookies::security_check($this->cookieName);
+
+        if($isCookiesValid && $this->useDbSession) {
+            $token = $_COOKIE[$this->cookieName];
+            $session = \Models\Sessions::findActive($token);
+            return $session !== null;
+        }
+
+        return $isCookiesValid;
     }
 
     public function getValue(): string | object | null {
-        if($this->isAuthenticated()) return $_COOKIE[$this->cookieName];
+        if($this->isAuthenticated()) {
+            $token = $_COOKIE[$this->cookieName];
+            if($this->useDbSession) {                
+                $session = \Models\Sessions::findActive($token);
+                if($session) {
+                    return $session->userId;
+                }
+                return null;
+            }
+            return $token;
+        }
         return null;
     }
 }
