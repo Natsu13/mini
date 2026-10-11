@@ -25,4 +25,10 @@ class Test extends \Controller {
     public function redirectTest(){
         return $this->redirectToRoute("test.test", ["i" => 123]);
     }
+
+    #[\AllowAnonymous]
+    #[\Route('test/error', \Method::GET, name: 'test.error')]
+    public function errorTest(){
+        throw new \Exception("Test error");
+    }
 }

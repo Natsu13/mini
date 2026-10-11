@@ -1,6 +1,13 @@
 RewriteEngine On
 
-<FilesMatch "\.(json|env|log|ini)$">
+# Block hidden files and directories (.git, .env, .htaccess, ...) at any depth, except .well-known (Let's Encrypt etc.)
+RewriteRule "(^|/)\.(?!well-known/)" - [R=404,L]
+
+# Block internal directories
+RewriteRule "^(temp|emails|errors|views|controllers|models)(/|$)" - [R=404,L]
+
+# Block sensitive files by extension and by name
+<FilesMatch "\.(json|env|log|ini)$|^(library\.php|README\.md)$">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>
@@ -10,11 +17,13 @@ RewriteEngine On
     </IfModule>
 </FilesMatch>
 
+# Serve existing files and directories directly
 RewriteCond %{REQUEST_FILENAME} -d [or]
 RewriteCond %{REQUEST_FILENAME} -f
 RewriteCond %{REQUEST_URI} !index.php
 RewriteRule ^(.*)$ $1 [L,QSA]
 
+# Everything else goes to the front controller
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule (.*) index.php?url=$1 [L]

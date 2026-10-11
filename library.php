@@ -1,12 +1,16 @@
 <?php
 if(!defined("USE_USERS")) define("USE_USERS", true);
 if(!defined("USE_EXCEPTION_HANDLER")) define("USE_EXCEPTION_HANDLER", true);
+if(!defined("DEBUG")) define("DEBUG", false);
 
-if(!defined("DEBUG")) {
+if(DEBUG !== true) {
     error_reporting(E_ERROR | E_PARSE);
+    ini_set('zend.exception_ignore_args', '1');
 }
 
 define("ROOT", str_replace("\\", "/", getcwd()));
+
+Request::sessionStart(); // Start session
 
 /**
  * $autoloader->addLib("PhpSpreadsheet", "PhpOffice", "libs");
@@ -1071,34 +1075,83 @@ class Utilities {
     }
 
     public static function ip(bool $pure = false): string {
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $remote = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $ip = $remote;
 
-        if (in_array($ip, self::trustedProxies(), true)) {
-            if (isset($_SERVER["HTTP_X_FORWARDED_FOR"])) {
-                $ip = $_SERVER["HTTP_X_FORWARDED_FOR"];
-            } elseif (isset($_SERVER["HTTP_FORWARDED_FOR"])) {
-                $ip = $_SERVER["HTTP_FORWARDED_FOR"];
+        $trusted = self::trustedProxies();
+
+        if (self::ipInList($remote, $trusted)) {
+            $header = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_FORWARDED_FOR'] ?? '';
+
+            if ($header !== '') {
+                $chain = array_map('trim', explode(',', $header));
+
+                // Walk from the right, skip trusted proxies, the first untrusted hop is the client
+                for ($i = count($chain) - 1; $i >= 0; $i--) {
+                    $candidate = $chain[$i];
+
+                    // Garbage in the chain: do not trust anything further left
+                    if (filter_var($candidate, FILTER_VALIDATE_IP) === false) {
+                        break;
+                    }
+
+                    $ip = $candidate;
+                    if (!self::ipInList($candidate, $trusted)) {
+                        break;
+                    }
+                }
             }
-        }
-
-        if (strpos($ip, ',') !== false) {
-            $ips = explode(',', $ip);
-            $ip = trim($ips[0]);
         }
 
         if ($pure) {
             return (string)$ip;
         }
 
-        if ($ip === "::1") {
-            $ip = "127.0.0.1";
+        if ($ip === '::1') {
+            $ip = '127.0.0.1';
         }
 
         if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
-            return "0.0.0.0";
+            return '0.0.0.0';
         }
 
         return $ip;
+    }
+
+    private static function ipInList(string $ip, array $list): bool {
+        foreach ($list as $entry) {
+            if (str_contains($entry, '/')) {
+                if (self::ipInCidr($ip, $entry)) {
+                    return true;
+                }
+            } elseif (inet_pton($ip) !== false && inet_pton($ip) === inet_pton($entry)) {
+                return true; // inet_pton normalizes IPv6 notation differences
+            }
+        }
+        return false;
+    }
+
+    private static function ipInCidr(string $ip, string $cidr): bool {
+        [$subnet, $bits] = explode('/', $cidr, 2);
+        $ipBin = inet_pton($ip);
+        $subnetBin = inet_pton($subnet);
+        if ($ipBin === false || $subnetBin === false || strlen($ipBin) !== strlen($subnetBin)) {
+            return false;
+        }
+
+        $bits = (int)$bits;
+        $bytes = intdiv($bits, 8);
+        $rest = $bits % 8;
+
+        if ($bytes > 0 && substr($ipBin, 0, $bytes) !== substr($subnetBin, 0, $bytes)) {
+            return false;
+        }
+        if ($rest === 0) {
+            return true;
+        }
+
+        $mask = (0xFF << (8 - $rest)) & 0xFF;
+        return (ord($ipBin[$bytes]) & $mask) === (ord($subnetBin[$bytes]) & $mask);
     }
 
     public static function isEmail(string $email): bool {
@@ -2525,10 +2578,10 @@ class Router {
                     }
                 }
 
-                if (isset($_GET[$name])) {
-                    $resolvedParams[] = $_GET[$name];
-                } elseif (isset($_POST[$name])) {
+                if (isset($_POST[$name])) {
                     $resolvedParams[] = $_POST[$name];
+                } else if (isset($_GET[$name])) {
+                    $resolvedParams[] = $_GET[$name];
                 } elseif (isset($_SERVER[$name])) {
                     $resolvedParams[] = $_SERVER[$name];
                 } elseif (isset($_FILES[$name])) {
@@ -3960,7 +4013,9 @@ class Cookies {
     }
 
     private static function signature(string $name, string $value): string {
-        return hash_hmac('sha256', $name . "|" . $value, self::getSecret());
+        //TODO: for some special cookies use session_id
+        //. "|" . Request::getSessionId()
+        return hash_hmac('sha256', $name . "|" . $value , self::getSecret());
     }
 
 	/*
@@ -4142,7 +4197,7 @@ class Csrf {
     }
 
     private static function sign(string $nonce): string {
-        return hash_hmac('sha256', "csrf|" . $nonce, Cookies::secret());
+        return hash_hmac('sha256', "csrf|" . $nonce . "|" . Request::getSessionId(), Cookies::secret());
     }
 
     /**
@@ -4972,7 +5027,7 @@ abstract class Model {
      * @return string The generated SQL statement(s).
      * @throws Exception If the table attribute is not found.
      */
-    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8", string $defaultCollation = "utf8_bin", ?string $dialect = null): string {
+    public static function generateCreateTableQuery(string $modelClass, string $defaultCharset = "utf8mb4_bin", string $defaultCollation = "utf8_bin", ?string $dialect = null): string {
         $dialect = strtolower($dialect ?? Container::getInstance()->get(Database::class)->driver());
         $sqlite = $dialect === 'sqlite';
 
@@ -6036,7 +6091,7 @@ class UserService {
                 $user->login = $login;
                 $user->password = $this->hashPassword($password);
                 $user->email = $email;
-                $user->permissionId = 1;
+                $user->permissionId = \Models\Permission::LEVEL_USER;
                 
                 if($callback != null) {
                     $callback($user);
@@ -6229,7 +6284,7 @@ class TicketService {
 
     public static function createTicket(Models\TicketType $type, ?int $entityId = null, ?string $data = null): Models\Ticket {
         $ticket = new Models\Ticket();
-        $ticket->token = Utilities::random(self::TOKEN_LENGTH);
+        $ticket->token = hash('sha256', Utilities::random(self::TOKEN_LENGTH));
         $ticket->type = $type;
         $ticket->entityId = $entityId;
         $ticket->data = $data;
@@ -6576,6 +6631,27 @@ class Request {
         }
     }
 
+    public static function setSecureHeaders(): void {
+        header("X-Frame-Options: DENY");        
+        header("X-Content-Type-Options: nosniff");
+        header("Referrer-Policy: strict-origin-when-cross-origin");
+        header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
+        header("Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
+        header_remove('X-Powered-By');
+
+        if (Request::isHttps()) {
+            // Start with a short max-age, raise it (e.g. to 31536000) once everything works over HTTPS
+            header('Strict-Transport-Security: max-age=300; includeSubDomains');
+        }
+
+        if(defined('USE_USERS') && USE_USERS) {
+            $userService = Container::getInstance()->get(\UserService::class);
+            if ($userService->isAuthentificated()) {
+                header("Cache-Control: private, no-store");
+            }
+        }
+    }
+
     /**
      * Case-insensitive header lookup ("X-CSRF-Token" and "x-csrf-token" are the same header).
      */
@@ -6666,12 +6742,39 @@ class Request {
             && in_array($_SERVER['REMOTE_ADDR'] ?? '', Utilities::trustedProxies(), true));
     }
 
+    private ?string $rawBody = null;
+
+    private function getRawBody(): string {
+        // Cache the body so php://input is read only once
+        return $this->rawBody ??= (string)file_get_contents('php://input');
+    }
+
     /**
-     * True when the request body is JSON (Content-Type: application/json).
+     * Returns true only when the media type is exactly "application/json"
+     * and the body is really valid JSON (object or array).
      */
     public function hasJsonBody(): bool {
         $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
-        return stripos($contentType, 'application/json') !== false;
+
+        // Keep only the media type (essence), drop parameters like "; charset=utf-8"
+        $essence = strtolower(trim(explode(';', $contentType, 2)[0]));
+        if ($essence !== 'application/json') {
+            return false;
+        }
+
+        $raw = $this->getRawBody();
+        if ($raw === '') {
+            return false;
+        }
+
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return false;
+        }
+
+        // Scalars like "1" or "true" are valid JSON, but not a real JSON request body
+        return is_array($decoded);
     }
 
     /**
@@ -6679,8 +6782,8 @@ class Request {
      * @return mixed|null
      */
     public function getJson(bool $associative = true): mixed {
-        $input = file_get_contents('php://input');
-        
+        $input = $this->getRawBody();
+
         if (empty($input)) {
             return null;
         }
@@ -6691,6 +6794,35 @@ class Request {
         } catch (\JsonException $e) {
             return null;
         }
+    }
+
+    public static function sessionStart(): void {
+        if (session_status() === PHP_SESSION_NONE) {
+            ini_set('session.use_strict_mode', '1');
+            ini_set('session.use_only_cookies', '1');
+
+            session_set_cookie_params([
+                'lifetime' => 0,
+                'path' => '/',
+                'secure' => true,
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]);
+
+            session_start();
+        }
+    }
+
+    public static function getSessionId(): string {
+        if (session_status() === PHP_SESSION_NONE) {
+            Request::sessionStart();
+        }
+
+        $id = session_id();
+        if ($id === '' || $id === false) {
+            throw new \RuntimeException('Session is not available.');
+        }
+        return $id;
     }
 }
 
@@ -7252,10 +7384,26 @@ if(USE_EXCEPTION_HANDLER) {
             }
         }
 
+        private const SENSITIVE_KEYS = [
+            'password', 'passwd', 'secret', 'token', 'api_key', 'apikey',
+            'authorization', 'cookie', 'csrf', 'private_key', 'credit_card',
+        ];
+        private const MASK = '***';
+
         private function prepareErrorData(Throwable $exception): array {
+            $debug = defined('DEBUG') && DEBUG === true;
+
             $line = $exception->getLine();
-            if($exception instanceof TemplaterV2Exception) {
+            if ($exception instanceof TemplaterV2Exception) {
                 $line = $exception->getRow() + 1;
+            }
+
+            $trace = $exception->getTrace();
+            $traceString = $exception->getTraceAsString();
+
+            if (!$debug) {
+                $trace = $this->sanitizeTrace($trace);
+                $traceString = $this->formatTrace($trace);
             }
 
             return [
@@ -7265,14 +7413,121 @@ if(USE_EXCEPTION_HANDLER) {
                 'message' => $exception->getMessage(),
                 'file' => $exception->getFile(),
                 'line' => $line,
-                'trace' => $exception->getTrace(), //structured trace for the error page
-                'trace_string' => $exception->getTraceAsString(),
+                'trace' => $trace, // structured trace for the error page
+                'trace_string' => $traceString,
                 'code' => $exception->getCode(),
                 'request_uri' => $_SERVER['REQUEST_URI'] ?? 'CLI',
                 'method' => $_SERVER['REQUEST_METHOD'] ?? 'CLI',
                 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'CLI',
                 'ip' => $_SERVER['REMOTE_ADDR'] ?? 'localhost'
             ];
+        }
+
+        private function isSensitiveKey(string|int|null $key): bool {
+            if (!is_string($key)) {
+                return false;
+            }
+            $key = strtolower($key);
+            foreach (self::SENSITIVE_KEYS as $needle) {
+                if (str_contains($key, $needle)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Recursively masks sensitive keys in arrays and replaces objects
+         * with a short description (objects may hold secrets and are not safe to store).
+         */
+        private function sanitizeValue(mixed $value, int $depth = 0): mixed {
+            if (is_object($value)) {
+                return 'Object(' . get_class($value) . ')';
+            }
+            if (!is_array($value)) {
+                return $value;
+            }
+            if ($depth > 5) {
+                return 'Array(...)';
+            }
+
+            $result = [];
+            foreach ($value as $key => $item) {
+                $result[$key] = $this->isSensitiveKey($key)
+                    ? self::MASK
+                    : $this->sanitizeValue($item, $depth + 1);
+            }
+            return $result;
+        }
+
+        /**
+         * Returns parameter names of the function/method from a trace frame.
+         */
+        private function getParameterNames(array $frame): array {
+            try {
+                $function = $frame['function'] ?? null;
+                if ($function === null) {
+                    return [];
+                }
+
+                $reflection = isset($frame['class'])
+                    ? new ReflectionMethod($frame['class'], $function)
+                    : new ReflectionFunction($function);
+
+                return array_map(fn(ReflectionParameter $p) => $p->getName(), $reflection->getParameters());
+            } catch (ReflectionException) {
+                return []; // closures, include/require frames, etc.
+            }
+        }
+
+        private function sanitizeTrace(array $trace): array {
+            foreach ($trace as &$frame) {
+                if (!isset($frame['args']) || !is_array($frame['args'])) {
+                    continue;
+                }
+
+                $names = $this->getParameterNames($frame);
+                foreach ($frame['args'] as $index => $arg) {
+                    // Named arguments (PHP 8) have string keys, positional ones use the reflection name
+                    $name = is_string($index) ? $index : ($names[$index] ?? null);
+
+                    $frame['args'][$index] = $this->isSensitiveKey($name)
+                        ? self::MASK
+                        : $this->sanitizeValue($arg);
+                }
+            }
+            unset($frame);
+
+            return $trace;
+        }
+
+        /**
+         * Builds a string similar to getTraceAsString() from the sanitized trace.
+         */
+        private function formatTrace(array $trace): string {
+            $lines = [];
+            foreach ($trace as $i => $frame) {
+                $location = isset($frame['file'])
+                    ? $frame['file'] . '(' . ($frame['line'] ?? 0) . ')'
+                    : '[internal function]';
+
+                $args = [];
+                foreach ($frame['args'] ?? [] as $arg) {
+                    $args[] = match (true) {
+                        is_string($arg) => "'" . (strlen($arg) > 15 ? substr($arg, 0, 15) . '...' : $arg) . "'",
+                        is_array($arg) => 'Array',
+                        is_null($arg) => 'NULL',
+                        is_bool($arg) => $arg ? 'true' : 'false',
+                        default => (string)$arg,
+                    };
+                }
+
+                $call = ($frame['class'] ?? '') . ($frame['type'] ?? '') . ($frame['function'] ?? '');
+                $lines[] = "#$i $location: $call(" . implode(', ', $args) . ')';
+            }
+            $lines[] = '#' . count($trace) . ' {main}';
+
+            return implode("\n", $lines);
         }
 
         private function logError(array $errorData): void {
@@ -7418,7 +7673,7 @@ if(USE_EXCEPTION_HANDLER) {
                 $codeHtml .= "</div>";
             }
 
-            $errMessage = str_replace("\n", "<br/>", $errorData['message']);
+            $errMessage = str_replace("\n", "<br/>", htmlspecialchars($errorData['message']));
 
             return "
             <!DOCTYPE html>
@@ -7570,5 +7825,7 @@ if(USE_EXCEPTION_HANDLER) {
 
 $configProvider->boot();
 $container->get(Autoload::class)->register();
+
+Request::setSecureHeaders(); // Set security headers
 
 DebugTimer::stop("library");

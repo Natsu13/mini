@@ -60,6 +60,11 @@ class Login extends \Controller {
 
     #[\Route('register', \Method::POST, name: 'auth.register')]
     public function registerPost(string $login, string $email, string $password, string $confirmPassword, string $gender = "") {
+        $validator = \Validator::make($_POST, ['login' => 'alpha_dash|min:3|max:32']);
+        if ($validator->fails()) {
+            return $this->view("register", ["error" => "Validation failed", "validator" => $validator->errors()]);
+        }
+
         if(empty($login) || empty($email) || empty($password) || empty($confirmPassword) || empty($gender)) {
             return $this->view("register", ["error" => "All fields are required"]);
         }

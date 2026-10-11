@@ -6,7 +6,7 @@ class Ticket extends \Model {
     #[\PrimaryKey]
     public ?int $id;
 
-    #[\Column(length: 20)]
+    #[\Column(length: 64)]
     public string $token;
 
     public int $created;

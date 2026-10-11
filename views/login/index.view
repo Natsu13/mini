@@ -2,9 +2,9 @@
 
 {if isset($model["state"])}
     {if $model["state"] == UserServiceLogin::WrongLogin}
-        <div class="flash flash-error">Wrong login</div>
+        <div class="flash flash-error">Wrong credentials</div>
     {elseif $model["state"] == UserServiceLogin::WrongPassword}
-        <div class="flash flash-error">Wrong password</div>
+        <div class="flash flash-error">Wrong credentials</div>
     {elseif $model["state"] == UserServiceLogin::Blocked}
         <div class="flash flash-error">Too many failed attempts. Please try again in {$model["retryMinutes"]} minutes.</div>
     {/if}

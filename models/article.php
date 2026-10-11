@@ -79,6 +79,7 @@ class Article extends \Model {
 
     /**
      * Turns a title (or a proposed slug) into a slug that no other article uses, adding -2, -3, ... when needed.
+     * Uses a single query: loads every slug equal to "base" or starting with "base-" and picks the first free one in PHP.
      */
     public static function uniqueSlug(string $source, ?int $ignoreId = null): string {
         $base = \Utilities::slugify($source, 200);
@@ -86,17 +87,31 @@ class Article extends \Model {
             $base = "article";
         }
 
-        $slug = $base;
-        for ($i = 2; $i < 1000; $i++) {
-            $query = self::where(["slug" => $slug]);
-            if ($ignoreId !== null) {
-                $query->where(["id <>" => $ignoreId]);
-            }
-            if ($query->count() === 0) {
-                return $slug;
-            }
-            $slug = $base . "-" . $i;
+        $query = self::where(function (\QueryBuilderWhere $w) use ($base) {
+            $w->and(["slug" => $base])
+            ->likeOr("slug", $base . "-", \DataTableLike::Right); // slug LIKE 'base-%'
+            return $w;
+        });
+
+        if ($ignoreId !== null) {
+            $query->where(["id <>" => $ignoreId]);
         }
-        return $base . "-" . bin2hex(random_bytes(3));
+
+        // Set of taken slugs (lowercase, because MySQL collations are usually case-insensitive)
+        $taken = [];
+        foreach ($query->fetchAll() as $article) {
+            $taken[strtolower($article->slug)] = true;
+        }
+
+        if (!isset($taken[strtolower($base)])) {
+            return $base;
+        }
+
+        $i = 2;
+        while (isset($taken[strtolower($base . "-" . $i)])) {
+            $i++;
+        }
+
+        return $base . "-" . $i;
     }
 }

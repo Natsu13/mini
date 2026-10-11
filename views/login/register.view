@@ -11,6 +11,9 @@
         {csrf}
         <label for="login">Login</label>
         <input type="text" id="login" name="login" maxlength="100" />
+        {if isset($model["validator"]["login"])}
+            <div class="flash flash-error">{$model["validator"]["login"]}</div>
+        {/if}
         <label for="email">E-mail</label>
         <input type="text" id="email" name="email" maxlength="100" />
         <label for="password">Password <span class="muted">(at least {UserService::MIN_PASSWORD_LENGTH} characters)</span></label>
