@@ -7582,6 +7582,10 @@ if(USE_EXCEPTION_HANDLER) {
             $errorData = $this->prepareErrorData($exception);
             $this->logError($errorData);
             
+            if(php_sapi_name() === 'cli') {
+                exit(1);
+            }
+
             if ($this->displayErrors) {
                 $this->displayErrorPage($errorData);
             } else {
@@ -8020,6 +8024,99 @@ if(USE_EXCEPTION_HANDLER) {
     }
 }
 
+class Cli {
+    private array $commands = [];
+
+    public function __construct() {
+        $this->registerCommand("hello", "Prints a greeting. Usage: hello <name> [--shout] [--times=N]", function (array $args, array $options): int {
+            $name = $args[0] ?? 'world';
+            $text = "Hello, {$name}!";
+            if (isset($options['shout'])) {
+                $text = strtoupper($text);
+            }
+            for ($i = 0; $i < (int)($options['times'] ?? 1); $i++) {
+                echo $text . PHP_EOL;
+            }
+            return 0;
+        });
+        $this->registerCommand("model:update", "Update specific class model in database. Usage: model:update <ModelClass>", function (array $args, array $options): int {
+            if (empty($args)) {
+                fwrite(STDERR, "Error: No model class specified." . PHP_EOL);
+                return 1;
+            }
+            $modelClass = $args[0];
+            if(!str_starts_with($modelClass, "\\Models\\")) {
+                $modelClass = "\\Models\\" . $modelClass;
+            }
+
+            if (!class_exists($modelClass)) {
+                fwrite(STDERR, "Error: Model class '{$modelClass}' does not exist." . PHP_EOL);
+                return 1;
+            }
+            if (!is_subclass_of($modelClass, 'Model')) {
+                fwrite(STDERR, "Error: Class '{$modelClass}' is not a valid model." . PHP_EOL);
+                return 1;
+            }
+            try {
+                Model::syncTable((string)$modelClass);
+                echo "Model '{$modelClass}' updated successfully." . PHP_EOL;
+                return 0;
+            } catch (Exception $e) {
+                fwrite(STDERR, "Error updating model '{$modelClass}': " . $e->getMessage() . PHP_EOL);
+                return 1;
+            }
+        });
+    }
+
+    public function registerCommand(string $name, string $description, callable $handler): void {
+        $this->commands[$name] = [$description, $handler];
+    }
+
+    /**
+     * Splits arguments into positional ones and options.
+     * "hello Natsu --shout --times=3" -> [["Natsu"], ["shout" => true, "times" => "3"]]
+     */
+    private function parseArgs(array $argv): array {
+        $args = [];
+        $options = [];
+
+        foreach (array_slice($argv, 2) as $arg) {
+            if (str_starts_with($arg, '--')) {
+                [$key, $value] = array_pad(explode('=', substr($arg, 2), 2), 2, true);
+                $options[$key] = $value;
+            } else {
+                $args[] = $arg;
+            }
+        }
+
+        return [$args, $options];
+    }
+
+    public function execute(array $argv): bool {
+        if (php_sapi_name() !== 'cli') {
+            return false;
+        }
+
+        $name = $argv[1] ?? 'help';
+        if ($name === 'help' || !isset($this->commands[$name])) {
+            if ($name !== 'help') {
+                fwrite(STDERR, "Unknown command: {$name}" . PHP_EOL . PHP_EOL);
+            }
+            echo "Available commands:" . PHP_EOL;
+            foreach ($this->commands as $commandName => [$description]) {
+                echo "  " . str_pad($commandName, 14) . $description . PHP_EOL;
+            }
+            exit($name === 'help' ? 0 : 1);
+        }
+
+        [$args, $options] = $this->parseArgs($argv);
+        $handler = $this->commands[$name][1];
+        $exitCode = $handler($args, $options);
+
+        exit($exitCode);
+    }
+}
+
 if(!defined("CACHE")) {
     define("CACHE", 1);
 }
@@ -8035,6 +8132,7 @@ $container->setSingleton(Database::class);
 $container->setSingleton(Request::class);
 $container->setSingleton(Response::class);
 $container->setSingleton(AuthentificatorProvider::class);
+$container->setSingleton(Cli::class);
 
 if(USE_USERS) {
     $container->setSingleton(LoginThrottle::class);
@@ -8058,6 +8156,8 @@ if(USE_EXCEPTION_HANDLER) {
 
 $configProvider->boot();
 $container->get(Autoload::class)->register();
+
+$container->get(Cli::class)->execute($argv ?? []);
 
 Request::setSecureHeaders(); // Set security headers
 
