@@ -1,4 +1,5 @@
 RewriteEngine On
+Options -Indexes
 
 # Block hidden files and directories (.git, .env, .htaccess, ...) at any depth, except .well-known (Let's Encrypt etc.)
 RewriteRule "(^|/)\.(?!well-known/)" - [R=404,L]
