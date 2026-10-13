@@ -28,7 +28,7 @@ class Autoload {
     private bool $needSave = false;
 
     public function __construct() {
-        $this->cacheFile = __DIR__ . '/autoload.cache.json';
+        $this->cacheFile = ROOT . '/autoload.cache.json';
         $this->loadCache();
     }
 
@@ -1987,7 +1987,7 @@ class Router {
     private ?string $matchedUrl = null;
     private ?array $routeData = null;
     private string $baseUrl;
-    private string $cacheFile = 'routes.cache.json';
+    private string $cacheFile = ROOT . '/routes.cache.json';
     private array $controllers = [];
     private array $procesed = [];
     private array $routesByName = [];
@@ -3970,7 +3970,7 @@ class Cookies {
     private static function getSecret(): string {
         if (self::$secret !== null) return self::$secret;
 
-        $file = __DIR__ . '/secret.json';
+        $file = ROOT . '/secret.json';
         if (!file_exists($file)) {
             $dataToSave = [
                 "cookies" => bin2hex(random_bytes(32))

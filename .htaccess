@@ -17,10 +17,13 @@ RewriteRule "^(temp|emails|errors|views|controllers|models)(/|$)" - [R=404,L]
     </IfModule>
 </FilesMatch>
 
+# Only index.php may be executed, comment this section out if you want to allow other PHP files to be executed
+RewriteRule "^(?!index\.php$).+\.php$" - [R=404,L]
+
 # Serve existing files and directories directly
 RewriteCond %{REQUEST_FILENAME} -d [or]
 RewriteCond %{REQUEST_FILENAME} -f
-RewriteCond %{REQUEST_URI} !index.php
+RewriteCond %{REQUEST_URI} !^/index\.php$
 RewriteRule ^(.*)$ $1 [L,QSA]
 
 # Everything else goes to the front controller
