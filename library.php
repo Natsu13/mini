@@ -754,6 +754,28 @@ class Config {
     public function set(string $key, string $value): void {
         $this->data[$key] = $value;
     }
+
+    public static function registerCliCommand(Cli $cli): void {
+        $cli->registerCommand("config:encrypt", "Encrypts the .env file into .env.encrypted. Use --key=YOUR_KEY to specify a key.",
+            function(array $args, array $options) {
+                $config = Container::getInstance()->get(Config::class);
+                $key = $options['key'] ?? $config->resolveKey();
+                $config->encrypt(key: $key);
+                echo "Config file encrypted successfully.\n";
+            }
+        );
+        $cli->registerCommand("config:decrypt", "Decrypts the .env.encrypted file and prints its contents. Use --key=YOUR_KEY to specify a key.",
+            function(array $args, array $options) {                 
+                $config = Container::getInstance()->get(Config::class);
+                $key = $options['key'] ?? $config->resolveKey();
+                if ($key === null) {
+                    throw new \RuntimeException("No decryption key available.");
+                }
+                $lines = $config->decryptEnv(ROOT . '/.env.encrypted', $key);
+                echo implode("\n", $lines) . "\n";
+            }
+        );
+    }
 }
 
 enum ConfigValidatorType {
@@ -8102,10 +8124,38 @@ class Cli {
             if ($name !== 'help') {
                 fwrite(STDERR, "Unknown command: {$name}" . PHP_EOL . PHP_EOL);
             }
-            echo "Available commands:" . PHP_EOL;
+
+            $commandWidth = strlen('Command');
+            $descriptionWidth = strlen('Description');
+
             foreach ($this->commands as $commandName => [$description]) {
-                echo "  " . str_pad($commandName, 14) . $description . PHP_EOL;
+                $commandWidth = max($commandWidth, strlen($commandName));
+                $descriptionWidth = max($descriptionWidth, strlen($description));
             }
+
+            $line = '+-' . str_repeat('-', $commandWidth)
+                . '-+-' . str_repeat('-', $descriptionWidth) . '-+';
+
+            echo $line . PHP_EOL;
+
+            printf(
+                "| %-{$commandWidth}s | %-{$descriptionWidth}s |" . PHP_EOL,
+                'Command',
+                'Description'
+            );
+
+            echo $line . PHP_EOL;
+
+            foreach ($this->commands as $commandName => [$description]) {
+                printf(
+                    "| %-{$commandWidth}s | %-{$descriptionWidth}s |" . PHP_EOL,
+                    $commandName,
+                    $description
+                );
+            }
+
+            echo $line . PHP_EOL;
+
             exit($name === 'help' ? 0 : 1);
         }
 
@@ -8157,7 +8207,10 @@ if(USE_EXCEPTION_HANDLER) {
 $configProvider->boot();
 $container->get(Autoload::class)->register();
 
-$container->get(Cli::class)->execute($argv ?? []);
+$cli = $container->get(Cli::class);
+Config::registerCliCommand($cli);
+
+$cli->execute($argv ?? []);
 
 Request::setSecureHeaders(); // Set security headers
 

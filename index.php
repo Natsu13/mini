@@ -13,12 +13,7 @@ use Models\Article;
 
 $container = Container::getInstance();
 
-$config = $container->get(Config::class);
-if(isset($_GET["encrypt"]) && defined("APP_KEY")) {
-    $config->encrypt(key: APP_KEY);
-    echo "Config was encrypted!";
-    exit();
-}
+//For .env encrypt use cli: config:encrypt --key=$APP_KEY
 
 $page = $container->get(Page::class);
 $router = $container->get(Router::class);
