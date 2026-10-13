@@ -6476,6 +6476,102 @@ if(USE_USERS) {
 
             return UserServiceCheck::Ok;
         }
+
+        public static function registerCliCommand(Cli $cli) {
+            $cli->registerCommand("permission:seed", "Create default permissions", function(array $args, array $options) {
+                $created = \Models\Permission::seedDefaults();
+                echo "Created {$created} default permission rows.\n";
+                return $created == 0? 1: 0;
+            });
+
+            $cli->registerCommand("permission:list", "List all permissions", function(array $args, array $options) {
+                $permissions = \Models\Permission::toQuery()->order("level DESC")->fetchAll();
+                $rows = [];
+                foreach($permissions as $permission) {
+                    $rows[] = [$permission->id, $permission->name, $permission->level];
+                }
+                Cli::renderTable(["Id", "Name", "Level"], $rows);
+                return 0;
+            });
+
+            $cli->registerCommand("user:register", "Create a new user. Usage: user:register <login> <password> <email>", function(array $args, array $options) {
+                $userService = Container::getInstance()->get(UserService::class);
+                $registerState = $userService->register($args[0] ?? "", $args[1] ?? "", $args[2] ?? "");
+                if($registerState instanceof \Models\User) {
+                    echo "User created successfully.\n";
+                } else {
+                    echo "Failed to create user.\n";
+                    switch($registerState) {
+                        case UserServiceCheck::EmailExists:
+                            echo "Email already exists.\n";
+                            break;
+                        case UserServiceCheck::EmailInvalid:
+                            echo "Email is invalid.\n";
+                            break;
+                        case UserServiceCheck::LoginExists:
+                            echo "Login already exists.\n";
+                            break;
+                        case UserServiceCheck::PasswordBad:
+                            echo "Password is too short (minimum length: ".UserService::MIN_PASSWORD_LENGTH.").\n";
+                            break;
+                        default:
+                            echo "Unknown error.\n";
+                    }
+                }
+                return $registerState == UserServiceCheck::Ok? 0: 1;
+            });
+
+            $cli->registerCommand("user:set:password", "Set a user's password. Usage: user:set:password <login> <new_password> --bypass-validation", function(array $args, array $options) {
+                $userService = Container::getInstance()->get(UserService::class);
+                $login = $args[0] ?? "";
+                $newPassword = $args[1] ?? "";
+                $bypassValidation = isset($options['bypass-validation']) && $options['bypass-validation'] === true;
+
+                if (!$userService->isPasswordAcceptable($newPassword) && !$bypassValidation) {
+                    echo "Password is too short (minimum length: ".UserService::MIN_PASSWORD_LENGTH.").\n";
+                    return 1;
+                }
+
+                $user = \Models\User::findByLogin($login);
+                if ($user === null) {
+                    echo "User not found.\n";
+                    return 2;
+                }
+
+                $user->password = $userService->hashPassword($newPassword);
+                $user->save();
+
+                echo "Password updated successfully for user #{$user->id} '{$user->login}', email: {$user->email}.\n";
+                return 0;
+            });
+            
+            $cli->registerCommand("user:set:permission", "Set a user's permission level. Usage: user:set:permission <login> <level>", function(array $args, array $options) {
+                $login = $args[0] ?? "";
+                $level = isset($args[1]) ? (int)$args[1] : null;
+
+                if ($level === null) {
+                    echo "Permission level is required.\n";
+                    return 1;
+                }
+                $permission = \Models\Permission::findByLevel($level);
+                if ($permission === null) {
+                    echo "Permission level {$level} does not exist.\n";
+                    return 1;
+                }
+
+                $user = \Models\User::findByLogin($login);
+                if ($user === null) {
+                    echo "User not found.\n";
+                    return 2;
+                }
+
+                $user->permissionId = $permission->id;
+                $user->save();
+
+                echo "Permission level updated successfully for user #{$user->id} '{$user->login}', email: {$user->email}. New level: #{$permission->id} {$permission->name}, level: {$permission->level}.\n";
+                return 0;
+            });
+        }
     }
 }
 
@@ -8061,6 +8157,7 @@ class Cli {
             }
             return 0;
         });
+
         $this->registerCommand("model:update", "Update specific class model in database. Usage: model:update <ModelClass>", function (array $args, array $options): int {
             if (empty($args)) {
                 fwrite(STDERR, "Error: No model class specified." . PHP_EOL);
@@ -8101,10 +8198,28 @@ class Cli {
     private function parseArgs(array $argv): array {
         $args = [];
         $options = [];
+        $argv = array_slice($argv, 2);
+        $count = count($argv);
 
-        foreach (array_slice($argv, 2) as $arg) {
+        for ($i = 0; $i < $count; $i++) {
+            $arg = $argv[$i];
+
             if (str_starts_with($arg, '--')) {
-                [$key, $value] = array_pad(explode('=', substr($arg, 2), 2), 2, true);
+                [$key, $value] = array_pad(
+                    explode('=', substr($arg, 2), 2),
+                    2,
+                    null
+                );
+
+                if ($value === null) {
+                    // Podpora --text "Hello World"
+                    if (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '--')) {
+                        $value = $argv[++$i];
+                    } else {
+                        $value = true;
+                    }
+                }
+
                 $options[$key] = $value;
             } else {
                 $args[] = $arg;
@@ -8125,45 +8240,69 @@ class Cli {
                 fwrite(STDERR, "Unknown command: {$name}" . PHP_EOL . PHP_EOL);
             }
 
-            $commandWidth = strlen('Command');
-            $descriptionWidth = strlen('Description');
-
-            foreach ($this->commands as $commandName => [$description]) {
-                $commandWidth = max($commandWidth, strlen($commandName));
-                $descriptionWidth = max($descriptionWidth, strlen($description));
-            }
-
-            $line = '+-' . str_repeat('-', $commandWidth)
-                . '-+-' . str_repeat('-', $descriptionWidth) . '-+';
-
-            echo $line . PHP_EOL;
-
-            printf(
-                "| %-{$commandWidth}s | %-{$descriptionWidth}s |" . PHP_EOL,
-                'Command',
-                'Description'
+            Cli::renderTable(
+                ['Command', 'Description'],
+                array_map(
+                    static fn($name, $command) => [$name, $command[0]],
+                    array_keys($this->commands),
+                    array_values($this->commands)
+                )
             );
-
-            echo $line . PHP_EOL;
-
-            foreach ($this->commands as $commandName => [$description]) {
-                printf(
-                    "| %-{$commandWidth}s | %-{$descriptionWidth}s |" . PHP_EOL,
-                    $commandName,
-                    $description
-                );
-            }
-
-            echo $line . PHP_EOL;
 
             exit($name === 'help' ? 0 : 1);
         }
 
-        [$args, $options] = $this->parseArgs($argv);
+        [$args, $options] = $this->parseArgs($argv);        
         $handler = $this->commands[$name][1];
         $exitCode = $handler($args, $options);
 
         exit($exitCode);
+    }
+
+    public static function renderTable(array $headers, array $rows): void {
+        $columnCount = count($headers);
+
+        if ($columnCount === 0) {
+            return;
+        }
+
+        $widths = array_map(
+            static fn($header) => strlen((string) $header),
+            $headers
+        );
+
+        foreach ($rows as $row) {
+            for ($i = 0; $i < $columnCount; $i++) {
+                $value = (string) ($row[$i] ?? '');
+                $widths[$i] = max($widths[$i], strlen($value));
+            }
+        }
+
+        $separator = '+';
+        foreach ($widths as $width) {
+            $separator .= str_repeat('-', $width + 2) . '+';
+        }
+
+        $renderRow = static function (array $row) use ($widths, $columnCount): string {
+            $line = '|';
+
+            for ($i = 0; $i < $columnCount; $i++) {
+                $value = (string) ($row[$i] ?? '');
+                $line .= ' ' . str_pad($value, $widths[$i]) . ' |';
+            }
+
+            return $line;
+        };
+
+        echo $separator . PHP_EOL;
+        echo $renderRow($headers) . PHP_EOL;
+        echo $separator . PHP_EOL;
+
+        foreach ($rows as $row) {
+            echo $renderRow($row) . PHP_EOL;
+        }
+
+        echo $separator . PHP_EOL;
     }
 }
 
@@ -8209,6 +8348,9 @@ $container->get(Autoload::class)->register();
 
 $cli = $container->get(Cli::class);
 Config::registerCliCommand($cli);
+if(USE_USERS){
+    UserService::registerCliCommand($cli);
+}
 
 $cli->execute($argv ?? []);
 
