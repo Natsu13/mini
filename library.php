@@ -1831,6 +1831,53 @@ final class Authorize {
     public function __construct(public int $level = 1) {}
 }
 
+interface ValidationModel {
+
+}
+
+abstract class ValidationAttribute {
+    public function __construct(public string $type = "none") {}
+    abstract public function getRule(): string;
+}
+class BasicValidationAttribute extends ValidationAttribute {
+    public function __construct(public string $type = "none") {
+        parent::__construct($type);
+    }
+
+    public function getRule(): string {
+        return $this->type;
+    }
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+final class Min extends ValidationAttribute {
+    public function __construct(public int $length) {
+        parent::__construct("min");
+    }
+
+    public function getRule(): string {
+        return $this->type.":".$this->length;
+    }
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+final class Max extends ValidationAttribute {
+    public function __construct(public int $length) {
+        parent::__construct("max");
+    }
+
+    public function getRule(): string {
+        return $this->type.":".$this->length;
+    }
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+final class Required extends BasicValidationAttribute {
+    public function __construct() {
+        parent::__construct("required");
+    }
+}
+
 /**
  * Small, dependency-free input validation for controllers:
  *
@@ -1852,11 +1899,28 @@ class Validator {
     /** @var array<string,string> field => first error message */
     private array $errors = [];
     private array $validated = [];
+    private ?string $model = null;
 
-    private function __construct(private array $data, private array $rules) {}
+    private function __construct(private ?array $data = null, private ?array $rules = null, string|ValidationModel|null $modelOrClass = null
+    ) {
+        if ($modelOrClass !== null) {
+            if (!is_a($modelOrClass, ValidationModel::class, true)) {
+                $name = is_string($modelOrClass) ? $modelOrClass : $modelOrClass::class;
+                throw new InvalidArgumentException("$name must implement ValidationModel");
+            }
+            // Always store the class name, even when an instance was passed
+            $this->model = is_string($modelOrClass) ? $modelOrClass : $modelOrClass::class;
+        }
+    }
 
     public static function make(array $data, array $rules): self {
         $validator = new self($data, $rules);
+        $validator->run();
+        return $validator;
+    }
+
+    public static function fromModel(array $data, string|ValidationModel $model): self {
+        $validator = new self(data: $data, modelOrClass: $model);
         $validator->run();
         return $validator;
     }
@@ -1896,32 +1960,120 @@ class Validator {
     }
 
     private function run(): void {
-        foreach ($this->rules as $field => $rules) {
-            if (is_string($rules)) {
-                $rules = $rules === '' ? [] : explode('|', $rules);
+        $rulesByField = $this->model !== null
+            ? $this->extractRulesFromModel($this->model)
+            : $this->normalizeRules($this->rules);
+
+        foreach ($rulesByField as $field => $rules) {
+            $this->validateField($field, $rules);
+        }
+    }
+
+    private function extractRulesFromModel(string $class): array {
+        $fields = [];
+        $reflection = new ReflectionClass($class);
+
+        // Map lowercase data key => real data key, so "Name", "name" and "NAME" all match
+        $keyMap = [];
+        foreach (array_keys($this->data ?? []) as $key) {
+            $keyMap[strtolower((string)$key)] = $key;
+        }
+
+        foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) continue;
+
+            // Use the key as it really came in the data, fall back to the property name
+            $name = $keyMap[strtolower($property->name)] ?? $property->name;
+            $fields[$name] ??= [];
+
+            $type = $property->getType();
+            $typeName = $type instanceof ReflectionNamedType ? $type->getName() : null;
+
+            if ($typeName === 'int' || $typeName === 'float') {
+                $fields[$name][] = $typeName === 'int' ? 'integer' : 'numeric';
+
+                $value = $this->data[$name] ?? null;
+                if (is_string($value)) {
+                    // Remove regular and non-breaking spaces
+                    $value = str_replace(["\u{00A0}", ' '], '', trim($value));
+
+                    $comma = strrpos($value, ',');
+                    $dot = strrpos($value, '.');
+
+                    if ($comma !== false && $dot !== false) {
+                        // Both present: the right-most one is the decimal separator
+                        $value = $comma > $dot
+                            ? str_replace(',', '.', str_replace('.', '', $value))   // 1.234,56
+                            : str_replace(',', '', $value);                         // 1,234.56
+                    } elseif ($comma !== false) {
+                        $value = str_replace(',', '.', $value);                     // 12,5
+                    }
+
+                    // Cast only when the value really matches the type,
+                    // otherwise keep the string so the rule reports the error
+                    if ($typeName === 'int' && preg_match('/^-?\d+$/', $value) === 1) {
+                        $value = (int)$value;
+                    } elseif ($typeName === 'float' && is_numeric($value)) {
+                        $value = (float)$value;
+                    }
+
+                    $this->data[$name] = $value;
+                }
             }
 
-            $value = $this->data[$field] ?? null;
-            if (is_string($value)) $value = trim($value);
-            $this->validated[$field] = $value;
-
-            $empty = $value === null || $value === '' || $value === [];
-            $required = in_array('required', $rules, true);
-
-            if ($empty) {
-                if ($required) {
-                    $this->errors[$field] = self::label($field) . " is required";
+            $columns = $property->getAttributes(Column::class);
+            if ($columns !== []) {
+                $column = $columns[0]->newInstance();
+                if ($column->length !== null) {
+                    $fields[$name][] = "max:" . $column->length;
                 }
+            }
+
+            $validators = $property->getAttributes(
+                ValidationAttribute::class,
+                ReflectionAttribute::IS_INSTANCEOF
+            );
+            foreach ($validators as $attribute) {
+                $fields[$name][] = $attribute->newInstance()->getRule();
+            }
+        }
+
+        return $fields;
+    }
+
+    private function normalizeRules(array $rules): array {
+        foreach ($rules as $field => $fieldRules) {
+            if (is_string($fieldRules)) {
+                $rules[$field] = $fieldRules === '' ? [] : explode('|', $fieldRules);
+            }
+        }
+        return $rules;
+    }
+
+    private function validateField(string $field, array $rules): void {
+        $value = $this->data[$field] ?? null;
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+        $this->validated[$field] = $value;
+
+        $empty = $value === null || $value === '' || $value === [];
+
+        if ($empty) {
+            if (in_array('required', $rules, true)) {
+                $this->errors[$field] = self::label($field) . " is required";
+            }
+            return;
+        }
+
+        foreach ($rules as $rule) {
+            if ($rule === 'required') {
                 continue;
             }
-
-            foreach ($rules as $rule) {
-                if ($rule === 'required') continue;
-                $message = $this->check($field, $value, $rule);
-                if ($message !== true) {
-                    $this->errors[$field] = $message;
-                    break;
-                }
+            $message = $this->check($field, $value, $rule);
+            if ($message !== true) {
+                $this->errors[$field] = $message;
+                break;
             }
         }
     }
@@ -8158,6 +8310,40 @@ class Cli {
             return 0;
         });
 
+        $this->registerCommand("model:create", "Create specific class model in database. Usage: model:create <ModelClass>", function (array $args, array $options): int {
+            if (empty($args)) {
+                fwrite(STDERR, "Error: No model class specified." . PHP_EOL);
+                return 1;
+            }
+            $modelClass = $args[0];
+            if(!str_starts_with($modelClass, "\\Models\\")) {
+                $modelClass = "\\Models\\" . $modelClass;
+            }
+
+            if (!class_exists($modelClass)) {
+                fwrite(STDERR, "Error: Model class '{$modelClass}' does not exist." . PHP_EOL);
+                return 1;
+            }
+            if (!is_subclass_of($modelClass, 'Model')) {
+                fwrite(STDERR, "Error: Class '{$modelClass}' is not a valid model." . PHP_EOL);
+                return 1;
+            }
+            try {
+                if (isset($options['sql'])) {
+                    $sql = Model::generateCreateTableQuery((string)$modelClass);
+                    echo "SQL for model '{$modelClass}':" . PHP_EOL;
+                    echo $sql . PHP_EOL;
+                } else {
+                    Model::createTables((string)$modelClass);
+                    echo "Model '{$modelClass}' created successfully." . PHP_EOL;
+                }
+                return 0;
+            } catch (Exception $e) {
+                fwrite(STDERR, "Error updating model '{$modelClass}': " . $e->getMessage() . PHP_EOL);
+                return 1;
+            }
+        });
+
         $this->registerCommand("model:update", "Update specific class model in database. Usage: model:update <ModelClass>", function (array $args, array $options): int {
             if (empty($args)) {
                 fwrite(STDERR, "Error: No model class specified." . PHP_EOL);
@@ -8177,8 +8363,14 @@ class Cli {
                 return 1;
             }
             try {
-                Model::syncTable((string)$modelClass);
-                echo "Model '{$modelClass}' updated successfully." . PHP_EOL;
+                if (isset($options['sql'])) {
+                    $sql = Model::generateSyncQuery((string)$modelClass);
+                    echo "SQL for model '{$modelClass}':" . PHP_EOL;
+                    echo $sql . PHP_EOL;
+                } else {
+                    Model::syncTable((string)$modelClass);
+                    echo "Model '{$modelClass}' updated successfully." . PHP_EOL;
+                }
                 return 0;
             } catch (Exception $e) {
                 fwrite(STDERR, "Error updating model '{$modelClass}': " . $e->getMessage() . PHP_EOL);
