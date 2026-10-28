@@ -2656,13 +2656,16 @@ class Router {
 
         $instance = Container::getInstance()->create($class);
 
+        // Closure::__invoke itself is always internal, so closures must be checked via the wrapped function.
         $isBuiltin = false;
-        if (is_object($methodNameOrCallback) && method_exists($methodNameOrCallback, '__invoke')) {
-            $ref = new ReflectionMethod($methodNameOrCallback, '__invoke');
-            $isBuiltin = $ref->isInternal();
+        if ($methodNameOrCallback instanceof Closure) {
+            $isBuiltin = (new ReflectionFunction($methodNameOrCallback))->isInternal();
+        } elseif (is_object($methodNameOrCallback) && method_exists($methodNameOrCallback, '__invoke')) {
+            $isBuiltin = (new ReflectionMethod($methodNameOrCallback, '__invoke'))->isInternal();
         }
 
-        if (!$isBuiltin && is_callable($methodNameOrCallback)) {
+        // Strings are action names, never global functions (an action called e.g. "date" must not run date()).
+        if (is_object($methodNameOrCallback) && !$isBuiltin && is_callable($methodNameOrCallback)) {
             $method = $methodNameOrCallback($variables);
         } else {
             $method = $methodNameOrCallback;
@@ -2673,7 +2676,8 @@ class Router {
         if (!is_string($method) || !method_exists($instance, $method) || !(new ReflectionMethod($instance, $method))->isPublic()
             || str_starts_with($method, '__') || method_exists(Controller::class, $method)) {
             if ($notFoundAsHttp) throw new HttpException(404);
-            throw new Exception("Method '$method' not found in class '$class'");
+            $methodLabel = is_string($method) ? $method : get_debug_type($method);
+            throw new Exception("Method '$methodLabel' not found in class '$class'");
         }
 
         $reflectionMethod = new ReflectionMethod($instance, $method);
