@@ -1790,8 +1790,10 @@ final class AllowAnonymous {}
  * Define the route path and HTTP method for a controller action. You can also specify a priority and an optional name for the route.
  * The route name is useful for generating URLs or referencing the route in other parts of the application.
  * If you define two same route path with different methods, the router will handle them correctly based on the HTTP method of the request.
+ * One action can have several #[Route] attributes (e.g. "" and "dashboard/<id>"); the one the request matched decides
+ * the required HTTP method and the route name used for sibling lookup.
  */
-#[Attribute(Attribute::TARGET_METHOD)]
+#[Attribute(Attribute::TARGET_METHOD | Attribute::IS_REPEATABLE)]
 final class Route {
     public function __construct(
         public string $path,
@@ -2165,6 +2167,8 @@ class Router {
     private array $controllers = [];
     private array $procesed = [];
     private array $routesByName = [];
+    /** Route definition (see add()) the current request is being handled by. */
+    private ?array $currentRoute = null;
 
     private ?ControllerAction $controllerData = null;
     private Layout $layout;
@@ -2524,6 +2528,7 @@ class Router {
                     $this->processVariables($matchedRoute['variables']);
 
                     try {
+                        $this->currentRoute = $matchedRoute;
                         $this->callController($matchedRoute['handler'], $matchedRoute['variables'], $matchedRoute['method']);
                     } catch (HttpException $e) {
                         $this->sendHttpError($e);
@@ -2621,11 +2626,31 @@ class Router {
         foreach ($this->routesByName[$name] as $route) {
             if ($route['method'] === $wantedMethod) {
                 [$class, $methodName] = $route['handler'];
+                $this->currentRoute = $route;
                 return new ReflectionMethod($class, $methodName);
             }
         }
 
         return null;
+    }
+
+    /**
+     * The #[Route] of $method that the current request was routed by (same path and HTTP method).
+     * Falls back to the first attribute, e.g. for routes added manually with Router::add().
+     */
+    private function routeAttributeFor(ReflectionMethod $method): ?Route {
+        $attributes = array_map(fn($a) => $a->newInstance(), $method->getAttributes(Route::class));
+        if ($attributes === []) return null;
+
+        if ($this->currentRoute !== null) {
+            foreach ($attributes as $attribute) {
+                if ($this->combineOptionalSegments($attribute->path) === $this->currentRoute['pattern']
+                    && ($this->currentRoute['method'] ?? Method::UNKNOWN) === $attribute->method) {
+                    return $attribute;
+                }
+            }
+        }
+        return $attributes[0];
     }
 
     /**
@@ -2692,9 +2717,8 @@ class Router {
             $requiredMethod = Method::UNKNOWN;
             $routeName = null;
 
-            $routeAttributes = $reflectionMethod->getAttributes(Route::class);
-            if ($routeAttributes !== []) {
-                $routeInstance = $routeAttributes[0]->newInstance();
+            $routeInstance = $this->routeAttributeFor($reflectionMethod);
+            if ($routeInstance !== null) {
                 $requiredMethod = $routeInstance->method;
                 $routeName = $routeInstance->name;
             }
@@ -3787,7 +3811,10 @@ class TemplaterV2 {
         } else if($type == "include") {
 			$params = $this->parserParams($value, 1);
             $name = $this->toPhp($params[0]);
-            $parameters = $this->toPhp($params[1]);
+            // {include 'name', ...$array} passes an existing array as the included view's model
+            $parameters = str_starts_with(trim($params[1] ?? ""), "...")
+                ? substr(trim($params[1]), 3)
+                : $this->toPhp($params[1]);
 			return "<?php Container::getInstance()->get(Layout::class)->render(ROOT . \"/views/".$name.".view\", ".$parameters."); ?>";
         } else if($type == "capture") {
 			$output = "<?php ob_start(); ?>";
@@ -4641,10 +4668,19 @@ final class PrimaryKey {
 #[Attribute(Attribute::TARGET_PROPERTY)]
 final class Column
 {
+    /**
+     * @param int|null $precision Float only: total number of digits; the column becomes DECIMAL(precision, scale),
+     *                            an exact type for money, conversion factors and similar.
+     * @param int|null $scale     Float only: digits after the decimal point (needs $precision, defaults to 0).
+     * @param bool     $double    Float only: DOUBLE (8 bytes, ~15 significant digits) instead of FLOAT (4 bytes, ~7 digits).
+     */
     public function __construct(
         public ?string $name = null,
         public ?string $defaultValue = null,
         public ?int $length = null,
+        public ?int $precision = null,
+        public ?int $scale = null,
+        public bool $double = false,
     ) {}
 }
 
@@ -5232,8 +5268,9 @@ abstract class Model {
             $defaultValue = null;
 
             $columnAttributes = $property->getAttributes(Column::class);
-            if (!empty($columnAttributes)) {
-                $defaultValue = $columnAttributes[0]->newInstance()->defaultValue;
+            $columnAttr = !empty($columnAttributes) ? $columnAttributes[0]->newInstance() : null;
+            if ($columnAttr !== null) {
+                $defaultValue = $columnAttr->defaultValue;
             }
 
             $type = $property->getType();
@@ -5254,6 +5291,22 @@ abstract class Model {
             $primaryKey = $property->getName() === $meta->primaryKeyProperty;
             $autoIncrement = $primaryKey && $typeName === 'int' && $meta->primaryKeyAutoIncrement;
 
+            if ($columnAttr !== null && ($columnAttr->precision !== null || $columnAttr->scale !== null || $columnAttr->double)) {
+                $where = "{$modelClass}::\${$property->getName()}";
+                if ($typeName !== 'float') {
+                    throw new Exception("precision, scale and double can be set only for float properties ({$where})");
+                }
+                if ($columnAttr->precision === null && $columnAttr->scale !== null) {
+                    throw new Exception("scale needs precision ({$where})");
+                }
+                if ($columnAttr->precision !== null && ($columnAttr->precision < 1 || ($columnAttr->scale ?? 0) < 0 || ($columnAttr->scale ?? 0) > $columnAttr->precision)) {
+                    throw new Exception("Invalid precision/scale ({$where})");
+                }
+                if ($columnAttr->precision !== null && $columnAttr->double) {
+                    throw new Exception("Use either precision/scale (DECIMAL) or double, not both ({$where})");
+                }
+            }
+
             $collate = "";
             if ($typeName === 'string') {
                 $sqlType = $length ? "varchar({$length})" : "text";
@@ -5264,7 +5317,13 @@ abstract class Model {
                         $sqlType = $sqlite ? 'integer' : ($length !== null ? "int({$length})" : "int");
                         break;
                     case 'float':
-                        $sqlType = $sqlite ? 'real' : 'float';
+                        if ($columnAttr?->precision !== null) {
+                            $sqlType = $sqlite ? 'numeric' : "decimal({$columnAttr->precision}," . ($columnAttr->scale ?? 0) . ")";
+                        } else if ($columnAttr?->double) {
+                            $sqlType = $sqlite ? 'real' : 'double';
+                        } else {
+                            $sqlType = $sqlite ? 'real' : 'float';
+                        }
                         break;
                     case 'bool':
                         $sqlType = $sqlite ? 'integer' : 'boolean';
