@@ -5990,8 +5990,43 @@ class QueryBuilder {
         return $this;
     }
 
+    /**
+     * Smallest value of a column among the matching rows, null when there are none.
+     */
+    public function min(string $column): mixed {
+        return $this->aggregate("MIN", $column);
+    }
+
+    /**
+     * Largest value of a column among the matching rows, null when there are none.
+     */
+    public function max(string $column): mixed {
+        return $this->aggregate("MAX", $column);
+    }
+
+    private function aggregate(string $function, string $column): mixed {
+        // The name goes straight into the SQL, it cannot be bound like a value.
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column) !== 1) {
+            throw new InvalidArgumentException("Invalid column name '$column'");
+        }
+
+        $buildData = $this->buildSql(true, "SELECT $function(`$column`)");
+
+        $stmt = $this->connection->prepare($buildData["sql"]);
+        foreach ($buildData["binds"] as $name => $value) {
+            $stmt->bindValue($name, $value, Database::getPdoParamType($value));
+        }
+
+        $stmt->execute();
+        $result = $stmt->fetchColumn();
+
+        $this->debugCapture($stmt, strtolower($function));
+
+        return $result === false ? null : $result;
+    }
+
 	public function count(): int {
-        $buildData = $this->buildSql(true);        
+        $buildData = $this->buildSql(true);
         
 		$stmt = $this->connection->prepare($buildData["sql"]);
         foreach ($buildData["binds"] as $name => $value) {
@@ -6268,12 +6303,12 @@ class QueryBuilder {
 		}
 	}
 
-    public function buildSql($isCount = false) {
+    public function buildSql($isCount = false, ?string $aggregateSelect = null) {
         $sql = [];
         $binds = [];
-        $queryType = $isCount ? "SELECT COUNT(*)" : "SELECT";
+        $queryType = $aggregateSelect ?? ($isCount ? "SELECT COUNT(*)" : "SELECT");
 
-        if ($isCount && count($this->items) === 0){
+        if ($isCount && ($aggregateSelect !== null || count($this->items) === 0)){
             $sql[] = $queryType;
         } else if (count($this->items) === 0) {
             $sql[] = $queryType . " *";
