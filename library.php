@@ -3303,7 +3303,7 @@ class TemplaterV2Exception extends \Exception {
 }
 
 class TemplaterV2 {
-    public const VERSION = "3";
+    public const VERSION = "4";
 
     private $content = [];
 	private $fileName = "";
@@ -3764,7 +3764,11 @@ class TemplaterV2 {
                 $expression = trim(substr($input, 3, strlen($input) - 3));
             }
             return "<?php echo ".trim($expression)."; ?>";
-		} else if($type == "csrf") {
+		} else if($type == "validator") {
+            // {validator field} -> validation error of the field from $model["validator"], if there is one
+            $error = "\$model[\"validator\"][".var_export(trim($value, " \t\n\r'\""), true)."]";
+            return "<?php if(isset(".$error.")) { ?><div class=\"flash flash-error\"><?php echo TemplaterV2::e(".$error."); ?></div><?php } ?>";
+        } else if($type == "csrf") {
             // {csrf} -> hidden input with the anti-CSRF token
             return "<?php echo Csrf::field(); ?>";
 		} else if($type == "flash") {
