@@ -1428,6 +1428,10 @@ class Paginator {
         return max(1, min((int)$page, $this->getTotalPages()));
     }
 
+    public function getTotalItems(): int {
+        return $this->totalItems;
+    }
+
     public function getTotalPages(): int {
         return max(1, ceil($this->totalItems / $this->itemsPerPage));
     }
