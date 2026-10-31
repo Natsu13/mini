@@ -8489,7 +8489,8 @@ class Cli {
     }
 
     public function execute(array $argv): bool {
-        if (php_sapi_name() !== 'cli') {
+        // "php script.php --test" skips the command dispatch, so a test script can require library.php and keep running
+        if (php_sapi_name() !== 'cli' || in_array('--test', $argv, true)) {
             return false;
         }
 
